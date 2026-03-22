@@ -80,6 +80,8 @@ hub.on('channel_message', async (msg) => {
  hub.log(`Weather request from ${msg.senderName} on ch=${msg.channelIdx}: ${text}`);
 
  let wlat = DEFAULT_LAT, wlon = DEFAULT_LON, wlabel = DEFAULT_LABEL;
+ const colonIdx = text.indexOf(": ");
+ const requesterName = colonIdx > 0 ? text.substring(0, colonIdx) : (msg.senderName || "anon");
  const locMatch = text.match(/weatherbot\s+(.+)/i);
  if (locMatch) {
  try {
@@ -90,7 +92,7 @@ hub.on('channel_message', async (msg) => {
 
  try {
  const weather = await fetchWeather(wlat, wlon, wlabel);
- const reply = truncate(weather.current);
+ const reply = truncate("@" + requesterName + ": " + weather.current);
  hub.log(`Reply: ${reply}`);
  hub.sendChannelMessage(msg.channelIdx, reply);
 

@@ -1,4 +1,4 @@
-// bot-quotebot.js — Quotebot plugin for mesh-hub
+// bot-quotebot.js – Quotebot plugin for mesh-hub
 // Responds to !quote, !q, quotebot commands on channels
 import HubClient from './hub-client.js';
 import { getQuoteForUser, startQuoteEngine, getQuotePoolSize, getUserSeenCount } from './quote_engine.js';
@@ -24,21 +24,33 @@ const GUZMAN_SECRET = '9cd8fcf22a47333b591d96a2b848b73f';
 const hub = new HubClient('quotebot');
 let guzmanChannelIdx = null;
 
-function truncate(text) {
- const buf = Buffer.from(text, 'utf8');
- if (buf.length <= MAX_MSG_BYTES) return text;
- const t = buf.slice(0, MAX_MSG_BYTES - 3);
- return t.toString('utf8') + '...';
+// Split text into chunks that fit MAX_MSG_BYTES, up to maxParts messages
+function splitMessage(text, maxParts = 3) {
+ const chunks = [];
+ let remaining = text;
+ for (let i = 0; i < maxParts && remaining.length > 0; i++) {
+ const buf = Buffer.from(remaining, 'utf8');
+ if (buf.length <= MAX_MSG_BYTES) {
+ chunks.push(remaining);
+ remaining = '';
+ } else {
+ const slice = buf.slice(0, MAX_MSG_BYTES).toString('utf8');
+ const lastSpace = slice.lastIndexOf(' ');
+ const cutAt = lastSpace > MAX_MSG_BYTES * 0.4 ? lastSpace : MAX_MSG_BYTES;
+ const cutBuf = Buffer.from(slice.substring(0, cutAt >= slice.length ? slice.length : cutAt), 'utf8');
+ chunks.push(cutBuf.toString('utf8'));
+ remaining = buf.slice(cutBuf.length).toString('utf8').trimStart();
+ }
+ }
+ return chunks;
 }
 
 hub.on('hub_state', (state) => {
  hub.log(`Hub state: connected=${state.connected}, channels=${state.channels?.length || 0}`);
- // Find GUZMAN channel by matching known channels
  if (state.channels) {
  for (const ch of state.channels) {
  hub.log(` Channel ${ch.channelIdx}: ${ch.name}`);
  }
- // We'll respond on whatever channel messages come from
  }
 });
 
@@ -54,16 +66,35 @@ hub.on('channel_message', (msg) => {
 
  if (!isQuoteCmd) return;
 
- hub.log(`Quote request from ${msg.senderName} on ch=${msg.channelIdx}: ${text}`);
+ // Extract requester name from channel text (format: "SenderName: command")
+ const colonIdx = text.indexOf(': ');
+ const requesterName = colonIdx > 0 ? text.substring(0, colonIdx) : (msg.senderName || 'anon');
+
+ hub.log(`Quote request from ${requesterName} on ch=${msg.channelIdx}: ${text}`);
 
  try {
- const quote = getQuoteForUser(msg.senderName);
+ const quote = getQuoteForUser(requesterName);
  if (quote) {
- const reply = truncate(`${quote.q} —${quote.a}`);
- hub.log(`Reply: ${reply}`);
- hub.sendChannelMessage(msg.channelIdx, reply);
+ // Build full quote: @name: "quote" –Author
+ const fullQuote = `@${requesterName}: ${quote.q} –${quote.a}`;
+
+ // Split into chunks up to 3 messages
+ const chunks = splitMessage(fullQuote, 3);
+
+ hub.log(`Reply (${chunks.length} parts): ${chunks[0].substring(0, 60)}...`);
+
+ // Send chunks with delay between them
+ for (let i = 0; i < chunks.length; i++) {
+ if (i === 0) {
+ hub.sendChannelMessage(msg.channelIdx, chunks[i]);
  } else {
- hub.sendChannelMessage(msg.channelIdx, 'No quotes available right now.');
+ const chunk = chunks[i];
+ const chIdx = msg.channelIdx;
+ setTimeout(() => hub.sendChannelMessage(chIdx, chunk), i * 2000);
+ }
+ }
+ } else {
+ hub.sendChannelMessage(msg.channelIdx, `@${requesterName}: No quotes available right now.`);
  }
  } catch(e) {
  hub.log(`Quote error: ${e.message}`);
