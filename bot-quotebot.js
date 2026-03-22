@@ -50,7 +50,7 @@ hub.on('channel_message', (msg) => {
  const lower = text.toLowerCase();
 
  // Respond to !quote, !q, or "quotebot" prefix
- const isQuoteCmd = lower.startsWith('!quote') || lower.startsWith('!q ') || lower === '!q' || lower.startsWith('quotebot');
+ const isQuoteCmd = lower.includes('!quote') || lower.includes('!q ') || lower.endsWith('!q') || lower.includes('quotebot');
 
  if (!isQuoteCmd) return;
 
