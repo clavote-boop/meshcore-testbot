@@ -74,7 +74,6 @@ function enqueueSend(channelIdx, text) {
 async function pollMessages() {
   if (fetchingMessages) { setTimeout(pollMessages, 30000); return; }
   fetchingMessages = true;
-  if (fetchingMessages) { setTimeout(pollMessages, 30000); return; }
  if (!connection) return;
  try {
  const waiting = await connection.getWaitingMessages();
@@ -271,8 +270,7 @@ function connectRadio() {
  }
  } catch(e) {
  if (!e.message?.includes("timed out")) log(`Push handler error: ${e.message}`);
-    fetchingMessages = false;
- }
+ } finally { fetchingMessages = false; }
  });
  log("Push listener for MsgWaiting registered");
  // Periodic contacts refresh
