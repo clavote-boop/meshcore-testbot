@@ -76,7 +76,9 @@ hub.on('channel_message', (msg) => {
  const quote = getQuoteForUser(requesterName);
  if (quote) {
  // Build full quote: @name: "quote" –Author
- const fullQuote = `@${requesterName}: ${quote.q} –${quote.a}`;
+ const pathMi = msg.pathLen ? (msg.pathLen * 0.621371).toFixed(1) : null;
+ const distStr = pathMi ? ` (${pathMi} mi)` : '';
+ const fullQuote = `@${requesterName}: ${quote.q} –${quote.a}${distStr}`;
 
  // Split into chunks up to 3 messages
  const chunks = splitMessage(fullQuote, 3);
