@@ -1,6 +1,7 @@
 // mesh-hub.js — MeshCore Connection Hub v1.0
 // Owns the serial connection, broadcasts messages to connected bot clients via TCP
 import { NodeJSSerialConnection } from '@liamcottle/meshcore.js';
+import crypto from 'crypto';
 import net from 'net';
 import fs from 'fs';
 import path from 'path';
@@ -22,6 +23,34 @@ const SERIAL_PORT = process.env.SERIAL_PORT || '/dev/ttyUSB0';
 const HUB_PORT = parseInt(process.env.HUB_PORT || '7777');
 const RECONNECT_DELAY = 5000;
 const VERSION = '1.0';
+
+
+// Configure earthquake channels on first startup
+async function configureChannels(c) {
+ try {
+ const ch7 = await c.getChannel(7);
+ if (ch7 && ch7.name && ch7.name.length > 0) {
+ log('Earthquake channels already configured');
+ for (const i of [7,8,9,10]) {
+ const ch = await c.getChannel(i);
+ log(' Channel ' + i + ': ' + (ch.name || '(empty)'));
+ }
+ return;
+ }
+ log('Configuring earthquake channels...');
+ const names = ['earthquake-bayarea','earthquake-la','earthquake-sd','earthquake'];
+ for (let i = 0; i < 4; i++) {
+ const secret = crypto.randomBytes(16);
+ const idx = 7 + i;
+ log(' Setting ch' + idx + ': ' + names[i] + ' key=' + Buffer.from(secret).toString('hex'));
+ await c.setChannel(idx, names[i], secret);
+ await new Promise(r => setTimeout(r, 500));
+ }
+ log('Earthquake channels configured successfully');
+ } catch(e) {
+ log('Channel config error: ' + e.message);
+ }
+}
 
 let connection = null;
 let guzmanChannel = null;
@@ -287,7 +316,7 @@ function connectRadio() {
  setTimeout(connectRadio, RECONNECT_DELAY);
  });
 
- conn.connect().catch(e => {
+ conn.connect().then(() => configureChannels(conn)).catch(e => {
  log(`Connect failed: ${e.message}`);
  connection = null;
  setTimeout(connectRadio, RECONNECT_DELAY);
