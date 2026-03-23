@@ -18,6 +18,7 @@ if (fs.existsSync(envPath)) {
 }
 
 const MY_NODE_NAME = 'Clem Heavyside';
+ const seenMessages = new Set();
 const MAX_MSG_BYTES = 190;
 const GUZMAN_SECRET = '9cd8fcf22a47333b591d96a2b848b73f';
 
@@ -56,6 +57,7 @@ hub.on('hub_state', (state) => {
 
 hub.on('channel_message', (msg) => {
  // Skip our own messages
+ const msgKey = (msg.timestamp || 0) + ":" + (msg.text || ""); if (seenMessages.has(msgKey)) return; seenMessages.add(msgKey); setTimeout(() => seenMessages.delete(msgKey), 30000);
  if (msg.senderName === MY_NODE_NAME) return;
 
  const text = (msg.text || '').trim();
