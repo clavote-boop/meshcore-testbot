@@ -76,7 +76,7 @@ async function pollMessages() {
   if (!connection) return;
  fetchingMessages = true;
  try {
- const waiting = await connection.getWaitingMessages();
+ const waiting = await Promise.race([connection.getWaitingMessages(), new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 10000))]);
  for (const msg of waiting) {
  if (msg.channelMessage) {
  const cm = msg.channelMessage;
@@ -238,7 +238,7 @@ function connectRadio() {
   if (fetchingMessages) { log('Push: skipped, fetch in progress'); return; }
   fetchingMessages = true;
  try {
- const waiting = await connection.getWaitingMessages();
+ const waiting = await Promise.race([connection.getWaitingMessages(), new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 10000))]);
  for (const msg of waiting) {
  if (msg.channelMessage) {
  const cm = msg.channelMessage;
@@ -269,8 +269,8 @@ function connectRadio() {
  }
  }
  } catch(e) {
- if (!e.message?.includes("timed out")) log(`Push handler error: ${e.message}`);
- } finally { fetchingMessages = false; }
+ log(`Push handler catch: ${e.message}`);
+ } finally { fetchingMessages = false; log("Push: fetchingMessages reset to false"); }
  });
  log("Push listener for MsgWaiting registered");
  // Periodic contacts refresh
