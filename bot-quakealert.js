@@ -224,7 +224,7 @@ process.on('SIGINT', () => { hub.close(); process.exit(0); });
 // Simulation command
 hub.on('channel_message', async (msg) => {
   if (msg.channelIdx !== CH_GUZMAN) return;
-  if (msg.senderName === MY_NODE_NAME) return;
+  if (msg.senderName === 'Clem Heavyside') return;
   const text = (msg.text || '').trim();
   const m = text.match(/^!simquake\s+(\d)$/i);
   if (!m) return;
