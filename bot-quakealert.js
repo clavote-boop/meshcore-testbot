@@ -142,7 +142,7 @@ async function alertQuake(feature) {
     channels.push(1); // test channel
     finalMsg = `${baseMsg} | Drop, Cover, Hold On. Check gas lines. Monitor #earthquake for updates.`;
   } else { // tier 4
-    channels.push(0); // public channel, send once per quake
+ // DISABLED:     channels.push(0); // public channel, send once per quake
     finalMsg = `${baseMsg} | EMERGENCY: Drop, Cover, Hold On. Move away from windows. Check for gas leaks. Do not use elevators. Tune to #earthquake or #earthquake[region] for continuous updates.`;
   }
   for (const ch of channels) {
