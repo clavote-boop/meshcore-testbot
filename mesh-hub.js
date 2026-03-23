@@ -38,13 +38,15 @@ function log(msg) {
 function broadcast(obj) {
  const data = JSON.stringify(obj) + '\n';
  for (const [sock, info] of clients) {
- try { sock.write(data); } catch(e) { log(`Broadcast err to ${info.name}: ${e.message}`); }
+ try { sock.write(data);
+ } catch(e) { log(`Broadcast err to ${info.name}: ${e.message}`); }
  }
 }
 
 // Send a channel text message through the radio (queued)
 let sendQueue = [];
 let sending = false;
+let fetchingMessages = false;
 async function processSendQueue() {
  if (sending || sendQueue.length === 0) return;
  sending = true;
@@ -70,6 +72,9 @@ function enqueueSend(channelIdx, text) {
 
 // Poll for new messages
 async function pollMessages() {
+  if (fetchingMessages) { setTimeout(pollMessages, 30000); return; }
+  fetchingMessages = true;
+  if (fetchingMessages) { setTimeout(pollMessages, 30000); return; }
  if (!connection) return;
  try {
  const waiting = await connection.getWaitingMessages();
@@ -105,6 +110,8 @@ async function pollMessages() {
  } catch(e) {
  if (!e.message?.includes('timed out')) log(`Poll error: ${e.message}`);
  }
+ fetchingMessages = false;
+
  // Poll again
  setTimeout(pollMessages, 30000);
 }
@@ -229,6 +236,8 @@ function connectRadio() {
  // Listen for real-time push notifications from radio
  connection.on(0x83, async () => { // PushCodes.MsgWaiting
  log("Push: MsgWaiting received, fetching messages...");
+  if (fetchingMessages) { log('Push: skipped, fetch in progress'); return; }
+  fetchingMessages = true;
  try {
  const waiting = await connection.getWaitingMessages();
  for (const msg of waiting) {
@@ -262,6 +271,7 @@ function connectRadio() {
  }
  } catch(e) {
  if (!e.message?.includes("timed out")) log(`Push handler error: ${e.message}`);
+    fetchingMessages = false;
  }
  });
  log("Push listener for MsgWaiting registered");
