@@ -73,8 +73,8 @@ function enqueueSend(channelIdx, text) {
 // Poll for new messages
 async function pollMessages() {
   if (fetchingMessages) { setTimeout(pollMessages, 30000); return; }
-  fetchingMessages = true;
- if (!connection) return;
+  if (!connection) return;
+ fetchingMessages = true;
  try {
  const waiting = await connection.getWaitingMessages();
  for (const msg of waiting) {
