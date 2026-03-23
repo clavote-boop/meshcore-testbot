@@ -31,6 +31,7 @@ const CH_EARTHQUAKE_BAYAREA = 7;
 const CH_EARTHQUAKE_LA = 8;
 const CH_EARTHQUAKE_SD = 9;
 const CH_EARTHQUAKE = 10;
+const CH_GUZMAN = 4;
 
 // Metro regions with proximity thresholds
 const REGIONS = [
@@ -220,4 +221,27 @@ setInterval(pollLoop, POLL_INTERVAL);
 pollLoop();
 
 process.on('SIGINT', () => { hub.close(); process.exit(0); });
+// Simulation command
+hub.on('channel_message', async (msg) => {
+  if (msg.channelIdx !== CH_GUZMAN) return;
+  if (msg.senderName === MY_NODE_NAME) return;
+  const text = (msg.text || '').trim();
+  const m = text.match(/^!simquake\s+(\d)$/i);
+  if (!m) return;
+  const tier = parseInt(m[1], 10);
+  const mags = {1:2.5,2:3.5,3:4.5,4:5.8,5:7.2};
+  const mag = mags[tier];
+  if (!mag) return;
+  const fakeFeature = {
+    properties: { mag, place: 'Simulated near San Jose', time: Date.now(), alert: null },
+    geometry: { coordinates: [-121.84, 37.27] }
+  };
+  const base = formatQuake(fakeFeature);
+  const regional = getRegionalChannels(37.27, -121.84);
+  const region = getRegionName(37.27, -121.84);
+  hub.sendChannelMessage(CH_GUZMAN, truncate(`[SIM] Tier ${tier} alert: ${base}`));
+  hub.sendChannelMessage(CH_GUZMAN, truncate(`[SIM] Would route to channels: ${regional.join(', ') || 'none'} in region ${region}`));
+  hub.sendChannelMessage(CH_GUZMAN, truncate('[SIM] End. No real alerts sent.'));
+});
+
 process.on('SIGTERM', () => { hub.close(); process.exit(0); });
