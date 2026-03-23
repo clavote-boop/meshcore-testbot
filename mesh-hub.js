@@ -29,7 +29,7 @@ const VERSION = '1.0';
 async function configureChannels(c) {
  try {
  const ch7 = await c.getChannel(7);
- if (ch7 && ch7.name && ch7.name.length > 0) {
+        if (ch7 && ch7.name && ch7.name.length > 0) {
  log('Earthquake channels already configured');
  for (const i of [7,8,9,10]) {
  const ch = await c.getChannel(i);
@@ -40,7 +40,7 @@ async function configureChannels(c) {
  log('Configuring earthquake channels...');
  const names = ['earthquake-bayarea','earthquake-la','earthquake-sd','earthquake'];
  for (let i = 0; i < 4; i++) {
- const secret = crypto.randomBytes(16);
+ const secret = Buffer.alloc(16, 0); // public channel
  const idx = 7 + i;
  log(' Setting ch' + idx + ': ' + names[i] + ' key=' + Buffer.from(secret).toString('hex'));
  await c.setChannel(idx, names[i], secret);
