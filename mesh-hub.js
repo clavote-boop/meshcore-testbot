@@ -106,7 +106,7 @@ async function pollMessages() {
  if (!e.message?.includes('timed out')) log(`Poll error: ${e.message}`);
  }
  // Poll again
- setTimeout(pollMessages, 2000);
+ setTimeout(pollMessages, 30000);
 }
 
 // Refresh contacts cache and broadcast
@@ -226,6 +226,45 @@ function connectRadio() {
  await refreshContacts();
  // Start polling
  pollMessages();
+ // Listen for real-time push notifications from radio
+ connection.on(0x83, async () => { // PushCodes.MsgWaiting
+ log("Push: MsgWaiting received, fetching messages...");
+ try {
+ const waiting = await connection.getWaitingMessages();
+ for (const msg of waiting) {
+ if (msg.channelMessage) {
+ const cm = msg.channelMessage;
+ const payload = {
+ type: "channel_message",
+ channelIdx: cm.channelIdx,
+ senderName: cm.senderName || "",
+ text: cm.text || "",
+ pathLen: cm.pathLen,
+ pubKeyPrefix: cm.pubKeyPrefix ? Buffer.from(cm.pubKeyPrefix).toString("hex") : "",
+ timestamp: Date.now()
+ };
+ log(`CH msg from ${payload.senderName}: ${payload.text.slice(0,80)}`);
+ broadcast(payload);
+ }
+ if (msg.contactMessage) {
+ const dm = msg.contactMessage;
+ const payload = {
+ type: "contact_message",
+ senderName: dm.senderName || "",
+ text: dm.text || "",
+ pathLen: dm.pathLen,
+ pubKeyPrefix: dm.pubKeyPrefix ? Buffer.from(dm.pubKeyPrefix).toString("hex") : "",
+ timestamp: Date.now()
+ };
+ log(`DM from ${payload.senderName}: ${payload.text.slice(0,80)}`);
+ broadcast(payload);
+ }
+ }
+ } catch(e) {
+ if (!e.message?.includes("timed out")) log(`Push handler error: ${e.message}`);
+ }
+ });
+ log("Push listener for MsgWaiting registered");
  // Periodic contacts refresh
  setInterval(() => refreshContacts(), 5 * 60 * 1000);
  } catch(e) {
