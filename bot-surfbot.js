@@ -109,6 +109,15 @@ const hubClient = new HubClient({ nodeName: MY_NODE_NAME });
 // Session map for pagination (expires after 5 minutes of inactivity)
 const userSessions = new Map(); // requester -> {spots: [{spot,dist}], idx: number, lastTime: ms}
 
+function sendEndOrMore(ch, requester, sess) {
+ if (sess.idx < sess.spots.length) {
+ hubClient.sendChannelMessage(ch, `Stoked! Reply Y for more spots`);
+ } else {
+ hubClient.sendChannelMessage(ch, `@${requester}: Thats all the breaks bro! Grab your board and go shred it!`);
+ userSessions.delete(requester);
+ }
+}
+
 hubClient.on('channel_message', async (msg) => {
   const text = (msg.text || '').trim();
   const colonIdx = text.indexOf(': ');
@@ -120,7 +129,7 @@ hubClient.on('channel_message', async (msg) => {
     const sess = userSessions.get(requester);
     // Clean up if stale
     if (Date.now() - sess.lastTime > 5 * 60 * 1000) { userSessions.delete(requester); return; }
-    const nextBatch = sess.spots.slice(sess.idx, sess.idx + 2);
+    const nextBatch = sess.spots.slice(sess.idx, sess.idx + 1);
     if (nextBatch.length === 0) {
       hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: Thats all the breaks bro! Grab your board and go shred it!`);
       userSessions.delete(requester);
@@ -156,7 +165,7 @@ hubClient.on('channel_message', async (msg) => {
       hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: Thats all the breaks bro! Grab your board and go shred it!`);
       userSessions.delete(requester);
     } else {
-      hubClient.sendChannelMessage(msg.channelIdx, `Stoked! Reply Y for more spots`);
+      sendEndOrMore(msg.channelIdx, requester, sess);
     }
     return;
   }
@@ -220,7 +229,7 @@ hubClient.on('channel_message', async (msg) => {
     const msg3 = `Tides: ${tideEvents.join(' ')}`;
     hubClient.sendChannelMessage(msg.channelIdx, truncate(msg3));
 
-    hubClient.sendChannelMessage(msg.channelIdx, `Stoked! Reply Y for more spots`);
+    sendEndOrMore(msg.channelIdx, requester, sess);
   } catch (e) {
     hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: Surfbot error - ${e.message}`);
   }
