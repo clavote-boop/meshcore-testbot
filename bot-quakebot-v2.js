@@ -82,9 +82,14 @@ async function fetchQuakes(lat, lon, radiusKm = 200, hours = 24) {
   return await httpGet(url);
 }
 
+function placeToMiles(place) {
+    return place.replace(/(\d+(?:\.\d+)?)\s*km\b/gi, (_, d) =>
+        (parseFloat(d) * 0.621371).toFixed(1) + 'mi');
+}
+
 function formatQuake(f) {
   const mag = f.properties.mag;
-  const place = f.properties.place;
+  const place = placeToMiles(f.properties.place || '');
   const time = new Date(f.properties.time);
   const hh = time.getUTCHours().toString().padStart(2, '0');
   const mm = time.getUTCMinutes().toString().padStart(2, '0');

@@ -70,9 +70,14 @@ function httpGet(url) {
  });
 }
 
+function placeToMiles(place) {
+    return place.replace(/(\d+(?:\.\d+)?)\s*km\b/gi, (_, d) =>
+        (parseFloat(d) * 0.621371).toFixed(1) + 'mi');
+}
+
 function formatQuake(f) {
  const mag = f.properties.mag;
- const place = f.properties.place;
+ const place = placeToMiles(f.properties.place || '');
  const t = new Date(f.properties.time);
  const hh = t.getUTCHours().toString().padStart(2, '0');
  const mm = t.getUTCMinutes().toString().padStart(2, '0');
