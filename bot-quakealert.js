@@ -35,9 +35,9 @@ const CH_GUZMAN = 4;
 
 // Metro regions with proximity thresholds
 const REGIONS = [
- { name: 'Bay Area', lat: 37.7749, lon: -122.4194, radiusKm: 150, channel: CH_EARTHQUAKE_BAYAREA },
- { name: 'Los Angeles', lat: 34.0522, lon: -118.2437, radiusKm: 150, channel: CH_EARTHQUAKE_LA },
- { name: 'San Diego', lat: 32.7157, lon: -117.1611, radiusKm: 100, channel: CH_EARTHQUAKE_SD },
+ { name: 'Bay Area', lat: 37.7749, lon: -122.4194, radiusMi: 93, channel: CH_EARTHQUAKE_BAYAREA },
+ { name: 'Los Angeles', lat: 34.0522, lon: -118.2437, radiusMi: 93, channel: CH_EARTHQUAKE_LA },
+ { name: 'San Diego', lat: 32.7157, lon: -117.1611, radiusMi: 62, channel: CH_EARTHQUAKE_SD },
 ];
 
 const QUIPS = [
@@ -83,9 +83,9 @@ function randomQuip() {
  return QUIPS[Math.floor(Math.random() * QUIPS.length)];
 }
 
-function haversineKm(lat1, lon1, lat2, lon2) {
+function haversineMi(lat1, lon1, lat2, lon2) {
  const toRad = d => d * Math.PI / 180;
- const R = 6371;
+ const R = 3958.8;
  const dLat = toRad(lat2 - lat1);
  const dLon = toRad(lon2 - lon1);
  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
@@ -95,28 +95,28 @@ function haversineKm(lat1, lon1, lat2, lon2) {
 function getRegionalChannels(lat, lon) {
  const channels = [];
  for (const r of REGIONS) {
- if (haversineKm(lat, lon, r.lat, r.lon) <= r.radiusKm) channels.push(r.channel);
+ if (haversineMi(lat, lon, r.lat, r.lon) <= r.radiusMi) channels.push(r.channel);
  }
  return channels;
 }
 
-function closestMetroKm(lat, lon) {
+function closestMetroMi(lat, lon) {
  let min = Infinity;
  for (const r of REGIONS) {
- const d = haversineKm(lat, lon, r.lat, r.lon);
+ const d = haversineMi(lat, lon, r.lat, r.lon);
  if (d < min) min = d;
  }
  return min;
 }
 
 function getTier(mag, lat, lon) {
- const metroDist = closestMetroKm(lat, lon);
+ const metroDist = closestMetroMi(lat, lon);
  if (mag >= 7.0) return 5;
  if (mag >= 5.5) return 4;
  if (mag >= 4.5) return 3;
- if (mag >= 4.0 && metroDist <= 50) return 3;
+ if (mag >= 4.0 && metroDist <= 31) return 3;
  if (mag >= 3.5) return 2;
- if (mag >= 3.0 && metroDist <= 30) return 2;
+ if (mag >= 3.0 && metroDist <= 19) return 2;
  return 1;
 }
 
@@ -124,7 +124,7 @@ function getRegionName(lat, lon) {
  let closest = null;
  let minD = Infinity;
  for (const r of REGIONS) {
- const d = haversineKm(lat, lon, r.lat, r.lon);
+ const d = haversineMi(lat, lon, r.lat, r.lon);
  if (d < minD) { minD = d; closest = r.name; }
  }
  return closest || 'California';
