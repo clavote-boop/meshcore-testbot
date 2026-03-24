@@ -73,7 +73,7 @@ function findClosestSpot(lat, lon) {
   let best = null;
   for (const spot of SURF_SPOTS) {
     const dist = haversineMi(lat, lon, spot.lat, spot.lon);
-    if (dist <= 50 && (!best || dist < best.dist)) {
+    if (!best || dist < best.dist) {
       best = { spot, dist };
     }
   }
