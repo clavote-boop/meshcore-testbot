@@ -229,7 +229,7 @@ hubClient.on('channel_message', async (msg) => {
     const msg3 = `Tides: ${tideEvents.join(' ')}`;
     hubClient.sendChannelMessage(msg.channelIdx, truncate(msg3));
 
-    sendEndOrMore(msg.channelIdx, requester, sess);
+    sendEndOrMore(msg.channelIdx, requester, userSessions.get(requester));
   } catch (e) {
     hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: Surfbot error - ${e.message}`);
   }
