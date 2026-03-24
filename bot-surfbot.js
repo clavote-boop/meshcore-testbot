@@ -1,5 +1,5 @@
 // bot-surfbot.js — Surfbot plugin for mesh-hub
-// Provides surf spot info with marine, wind, and tide data
+// Provides surf spot info with marine, wind, and tide data (including pagination).
 import HubClient from './hub-client.js';
 import https from 'https';
 import fs from 'fs';
@@ -7,7 +7,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 
-// Load global env
 dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,23 +23,23 @@ const MAX_MSG_BYTES = 190;
 const SURF_SPOTS = [
   { name: 'Steamer Lane', lat: 36.951, lon: -122.026, noaaStation: 9413450 },
   { name: 'Pleasure Point', lat: 36.964, lon: -121.976, noaaStation: 9413450 },
-  { name: 'Pacifica/Linda Mar', lat: 37.592, lon: -122.500, noaaStation: 9414290 },
-  { name: 'Ocean Beach SF', lat: 37.760, lon: -122.514, noaaStation: 9414290 },
-  { name: 'Mavericks', lat: 37.494, lon: -122.500, noaaStation: 9414290 },
+  { name: 'Pacifica/Linda Mar', lat: 37.592, lon: -122.5, noaaStation: 9414290 },
+  { name: 'Ocean Beach SF', lat: 37.76, lon: -122.514, noaaStation: 9414290 },
+  { name: 'Mavericks', lat: 37.494, lon: -122.5, noaaStation: 9414290 },
   { name: 'Santa Cruz Harbor', lat: 36.963, lon: -122.001, noaaStation: 9413450 },
   { name: 'Capitola', lat: 36.972, lon: -121.953, noaaStation: 9413450 },
   { name: 'Manresa', lat: 36.935, lon: -121.866, noaaStation: 9413450 },
   { name: 'Monterey', lat: 36.613, lon: -121.893, noaaStation: 9413450 },
   { name: 'Moss Landing', lat: 36.804, lon: -121.789, noaaStation: 9413450 },
   { name: 'Bolinas', lat: 37.908, lon: -122.731, noaaStation: 9414958 },
-  { name: 'Stinson Beach', lat: 37.900, lon: -122.643, noaaStation: 9414958 },
+  { name: 'Stinson Beach', lat: 37.9, lon: -122.643, noaaStation: 9414958 },
   { name: 'Half Moon Bay', lat: 37.503, lon: -122.473, noaaStation: 9414290 },
   { name: 'Ano Nuevo', lat: 37.108, lon: -122.338, noaaStation: 9414290 },
-  { name: 'Davenport', lat: 37.012, lon: -122.190, noaaStation: 9413450 },
+  { name: 'Davenport', lat: 37.012, lon: -122.19, noaaStation: 9413450 },
   { name: 'Huntington Beach', lat: 33.655, lon: -118.005, noaaStation: 9410660 },
   { name: 'Trestles', lat: 33.382, lon: -117.589, noaaStation: 9410230 },
   { name: 'Rincon', lat: 34.374, lon: -119.476, noaaStation: 9411340 },
-  { name: 'Ventura', lat: 34.267, lon: -119.280, noaaStation: 9411340 },
+  { name: 'Ventura', lat: 34.267, lon: -119.28, noaaStation: 9411340 },
   { name: 'Malibu', lat: 34.036, lon: -118.678, noaaStation: 9410660 }
 ];
 
@@ -69,17 +68,6 @@ function degToCompass(deg) {
   return dirs[Math.round(((deg % 360) / 45)) % 8];
 }
 
-function findClosestSpot(lat, lon) {
-  let best = null;
-  for (const spot of SURF_SPOTS) {
-    const dist = haversineMi(lat, lon, spot.lat, spot.lon);
-    if (!best || dist < best.dist) {
-      best = { spot, dist };
-    }
-  }
-  return best;
-}
-
 function metersToFeet(m) {
   return Math.round((m * 3.28084) * 10) / 10; // 1 decimal
 }
@@ -95,8 +83,8 @@ async function fetchWind(lat, lon) {
 }
 
 async function fetchTides(stationId) {
-  const today = new Date().toISOString().split('T')[0];
-  const url = `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?date=${today}&product=predictions&datum=MLLW&time_zone=lst_ldt&interval=hilo&units=english&format=json&station=${stationId}`;
+  // Use literal "today" and include high/low interval
+  const url = `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?date=today&product=predictions&datum=MLLW&time_zone=lst_ldt&units=english&format=json&station=${stationId}&interval=hilo`;
   return await httpGet(url);
 }
 
@@ -118,12 +106,60 @@ async function geocodeLocation(query) {
 
 const hubClient = new HubClient({ nodeName: MY_NODE_NAME });
 
+// Session map for pagination (expires after 5 minutes of inactivity)
+const userSessions = new Map(); // requester -> {spots: [{spot,dist}], idx: number, lastTime: ms}
+
 hubClient.on('channel_message', async (msg) => {
   const text = (msg.text || '').trim();
   const colonIdx = text.indexOf(': ');
   const requester = colonIdx > 0 ? text.substring(0, colonIdx) : (msg.senderName || 'anon');
   const afterColon = colonIdx > 0 ? text.substring(colonIdx + 2) : text;
 
+  // Pagination request – just "Y" (case‑insensitive)
+  if (/^Y$/i.test(afterColon) && userSessions.has(requester)) {
+    const sess = userSessions.get(requester);
+    // Clean up if stale
+    if (Date.now() - sess.lastTime > 5 * 60 * 1000) { userSessions.delete(requester); return; }
+    const nextBatch = sess.spots.slice(sess.idx, sess.idx + 2);
+    if (nextBatch.length === 0) {
+      hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: No more spots.`);
+      userSessions.delete(requester);
+      return;
+    }
+    for (const { spot, dist } of nextBatch) {
+      try {
+        const [marine, , tides] = await Promise.all([
+          fetchMarine(spot.lat, spot.lon),
+          fetchWind(spot.lat, spot.lon), // wind not needed for compact view but kept for consistency
+          fetchTides(spot.noaaStation)
+        ]);
+        const swellHeightFt = metersToFeet(marine.current.swell_wave_height || 0);
+        const swellDir = degToCompass(marine.current.swell_wave_direction || 0);
+        // Use first tide prediction for compact view
+        let tideStr = '';
+        if (tides.predictions && tides.predictions.length > 0) {
+          const p = tides.predictions[0];
+          const time = p.t.split(' ')[1].replace(/^0/, '');
+          tideStr = `${p.type} ${p.v}ft @${time}`;
+        }
+        const msgTxt = `@${requester}: ${spot.name} (${dist.toFixed(1)}mi) Swell ${swellHeightFt}ft ${swellDir} | Tide ${tideStr}`;
+        hubClient.sendChannelMessage(msg.channelIdx, truncate(msgTxt));
+      } catch (e) {
+        hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: Surfbot error - ${e.message}`);
+      }
+    }
+    sess.idx += 2;
+    sess.lastTime = Date.now();
+    if (sess.idx >= sess.spots.length) {
+      hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: No more spots.`);
+      userSessions.delete(requester);
+    } else {
+      hubClient.sendChannelMessage(msg.channelIdx, `Reply Y for next 2 spots`);
+    }
+    return;
+  }
+
+  // Main surfbot request – must contain the word "surfbot"
   if (!/surfbot/i.test(afterColon)) return;
 
   const locMatch = afterColon.match(/surfbot\s+(.+)/i);
@@ -133,28 +169,29 @@ hubClient.on('channel_message', async (msg) => {
     if (geo) { lat = geo.lat; lon = geo.lon; label = geo.name; }
   }
 
-  const closest = findClosestSpot(lat, lon);
-  if (!closest) {
-    hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: No surf spots found within 50 miles.`);
-    return;
-  }
-  const { spot, dist } = closest;
+  // Compute distances for all spots and sort
+  const distances = SURF_SPOTS.map(spot => ({ spot, dist: haversineMi(lat, lon, spot.lat, spot.lon) }));
+  distances.sort((a, b) => a.dist - b.dist);
+  const primary = distances[0];
+
+  // Store session for pagination (skip the first spot which is already shown)
+  userSessions.set(requester, { spots: distances, idx: 1, lastTime: Date.now() });
 
   try {
     const [marine, wind, tides] = await Promise.all([
-      fetchMarine(spot.lat, spot.lon),
-      fetchWind(spot.lat, spot.lon),
-      fetchTides(spot.noaaStation)
+      fetchMarine(primary.spot.lat, primary.spot.lon),
+      fetchWind(primary.spot.lat, primary.spot.lon),
+      fetchTides(primary.spot.noaaStation)
     ]);
 
-    // Marine data (swell)
+    // Swell message
     const swellHeightFt = metersToFeet(marine.current.swell_wave_height || 0);
     const swellDir = degToCompass(marine.current.swell_wave_direction || 0);
     const swellPeriod = marine.current.swell_wave_period || '';
-    const msg1 = `@${requester}: ${spot.name} (${dist.toFixed(1)}mi) Swell ${swellHeightFt}ft@${swellPeriod}s ${swellDir}`;
+    const msg1 = `@${requester}: ${primary.spot.name} (${primary.dist.toFixed(1)}mi) Swell ${swellHeightFt}ft@${swellPeriod}s ${swellDir}`;
     hubClient.sendChannelMessage(msg.channelIdx, truncate(msg1));
 
-    // Wind & wave data
+    // Wind & wave message
     const windSpeed = wind.current.wind_speed_10m || '';
     const windDir = degToCompass(wind.current.wind_direction_10m || 0);
     const gust = wind.current.wind_gusts_10m || '';
@@ -164,10 +201,15 @@ hubClient.on('channel_message', async (msg) => {
     const msg2 = `Wind: ${windSpeed} mph ${windDir} gusts ${gust} | Waves: ${waveHeightFt}ft@${wavePeriod}s ${waveDir}`;
     hubClient.sendChannelMessage(msg.channelIdx, truncate(msg2));
 
-    // Tides formatting
-    const tideEvents = (tides.predictions || []).map(p => `${p.type.charAt(0)} ${p.height}ft ${p.time}`);
+    // Tide message – use NOAA format (v, t)
+    const tideEvents = (tides.predictions || []).map(p => {
+      const time = p.t.split(' ')[1].replace(/^0/, '');
+      return `${p.type} ${p.v}ft @${time}`;
+    });
     const msg3 = `Tides: ${tideEvents.join(' ')}`;
     hubClient.sendChannelMessage(msg.channelIdx, truncate(msg3));
+
+    hubClient.sendChannelMessage(msg.channelIdx, `Reply Y for next 2 spots`);
   } catch (e) {
     hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: Surfbot error - ${e.message}`);
   }
