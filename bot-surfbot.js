@@ -128,13 +128,15 @@ hubClient.on('channel_message', async (msg) => {
     }
     for (const { spot, dist } of nextBatch) {
       try {
-        const [marine, , tides] = await Promise.all([
+        const [marine, wind, tides] = await Promise.all([
           fetchMarine(spot.lat, spot.lon),
-          fetchWind(spot.lat, spot.lon), // wind not needed for compact view but kept for consistency
+          fetchWind(spot.lat, spot.lon),
           fetchTides(spot.noaaStation)
         ]);
         const swellHeightFt = metersToFeet(marine.current.swell_wave_height || 0);
         const swellDir = degToCompass(marine.current.swell_wave_direction || 0);
+        const windSpeed = wind.current.wind_speed_10m || '';
+        const windDir = degToCompass(wind.current.wind_direction_10m || 0);
         // Use first tide prediction for compact view
         let tideStr = '';
         if (tides.predictions && tides.predictions.length > 0) {
@@ -142,7 +144,7 @@ hubClient.on('channel_message', async (msg) => {
           const time = p.t.split(' ')[1].replace(/^0/, '');
           tideStr = `${p.type} ${p.v}ft @${time}`;
         }
-        const msgTxt = `@${requester}: ${spot.name} (${dist.toFixed(1)}mi) Swell ${swellHeightFt}ft ${swellDir} | Tide ${tideStr}`;
+        const msgTxt = `@${requester}: ${spot.name} (${dist.toFixed(1)}mi) Swell ${swellHeightFt}ft ${swellDir} Wind ${windSpeed}mph ${windDir} | Tide ${tideStr}`;
         hubClient.sendChannelMessage(msg.channelIdx, truncate(msgTxt));
       } catch (e) {
         hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: Surfbot error - ${e.message}`);
@@ -202,9 +204,18 @@ hubClient.on('channel_message', async (msg) => {
     hubClient.sendChannelMessage(msg.channelIdx, truncate(msg2));
 
     // Tide message – use NOAA format (v, t)
+    function formatTideTime(t24) {
+      const [hh, mm] = t24.split(':');
+      let h = parseInt(hh, 10);
+      const ampm = h >= 12 ? 'pm' : 'am';
+      if (h > 12) h -= 12;
+      if (h === 0) h = 12;
+      return h + ':' + mm + ampm;
+    }
     const tideEvents = (tides.predictions || []).map(p => {
-      const time = p.t.split(' ')[1].replace(/^0/, '');
-      return `${p.type} ${p.v}ft @${time}`;
+      const t = formatTideTime(p.t.split(' ')[1]);
+      const h = parseFloat(p.v).toFixed(1);
+      return p.type + ' ' + h + 'ft @' + t;
     });
     const msg3 = `Tides: ${tideEvents.join(' ')}`;
     hubClient.sendChannelMessage(msg.channelIdx, truncate(msg3));
