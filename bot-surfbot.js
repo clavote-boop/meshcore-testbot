@@ -122,7 +122,7 @@ hubClient.on('channel_message', async (msg) => {
     if (Date.now() - sess.lastTime > 5 * 60 * 1000) { userSessions.delete(requester); return; }
     const nextBatch = sess.spots.slice(sess.idx, sess.idx + 2);
     if (nextBatch.length === 0) {
-      hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: No more spots.`);
+      hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: Thats all the breaks bro! Grab your board and go shred it!`);
       userSessions.delete(requester);
       return;
     }
@@ -151,10 +151,10 @@ hubClient.on('channel_message', async (msg) => {
     sess.idx += 2;
     sess.lastTime = Date.now();
     if (sess.idx >= sess.spots.length) {
-      hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: No more spots.`);
+      hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: Thats all the breaks bro! Grab your board and go shred it!`);
       userSessions.delete(requester);
     } else {
-      hubClient.sendChannelMessage(msg.channelIdx, `Reply Y for next 2 spots`);
+      hubClient.sendChannelMessage(msg.channelIdx, `Stoked! Reply Y for more spots`);
     }
     return;
   }
@@ -171,7 +171,7 @@ hubClient.on('channel_message', async (msg) => {
 
   // Compute distances for all spots and sort
   const distances = SURF_SPOTS.map(spot => ({ spot, dist: haversineMi(lat, lon, spot.lat, spot.lon) }));
-  distances.sort((a, b) => a.dist - b.dist);
+  distances.sort((a, b) => a.dist - b.dist).filter(d => d.dist <= 200).slice(0, 7);
   const primary = distances[0];
 
   // Store session for pagination (skip the first spot which is already shown)
@@ -209,7 +209,7 @@ hubClient.on('channel_message', async (msg) => {
     const msg3 = `Tides: ${tideEvents.join(' ')}`;
     hubClient.sendChannelMessage(msg.channelIdx, truncate(msg3));
 
-    hubClient.sendChannelMessage(msg.channelIdx, `Reply Y for next 2 spots`);
+    hubClient.sendChannelMessage(msg.channelIdx, `Stoked! Reply Y for more spots`);
   } catch (e) {
     hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: Surfbot error - ${e.message}`);
   }
