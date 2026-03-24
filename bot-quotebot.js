@@ -20,7 +20,7 @@ if (fs.existsSync(envPath)) {
 const MY_NODE_NAME = 'Clem Heavyside';
  const seenMessages = new Set();
 const MAX_MSG_BYTES = 190;
-const GUZMAN_SECRET = '9cd8fcf22a47333b591d96a2b848b73f';
+const GUZMAN_SECRET = process.env.GUZMAN_SECRET || '';
 
 const hub = new HubClient('quotebot');
 let guzmanChannelIdx = null;
