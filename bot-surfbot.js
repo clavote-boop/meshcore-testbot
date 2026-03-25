@@ -199,6 +199,7 @@ hubClient.on('channel_message', async (msg) => {
     // Surf message (swell + wind + waves combined)
     const swellHeightFt = metersToFeet(marine.current.swell_wave_height || 0);
     const swellDir = degToCompass(marine.current.swell_wave_direction || 0);
+    const swellDeg = Math.round(marine.current.swell_wave_direction || 0);
     const swellPeriod = marine.current.swell_wave_period || '';
     const windSpeed = wind.current.wind_speed_10m || '';
     const windDir = degToCompass(wind.current.wind_direction_10m || 0);
