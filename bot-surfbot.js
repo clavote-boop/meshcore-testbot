@@ -195,22 +195,18 @@ hubClient.on('channel_message', async (msg) => {
       fetchTides(primary.spot.noaaStation)
     ]);
 
-    // Swell message
+    // Surf message (swell + wind + waves combined)
     const swellHeightFt = metersToFeet(marine.current.swell_wave_height || 0);
     const swellDir = degToCompass(marine.current.swell_wave_direction || 0);
     const swellPeriod = marine.current.swell_wave_period || '';
-    const msg1 = `@${requester}: ${primary.spot.name} (${primary.dist.toFixed(1)}mi) Swell ${swellHeightFt}ft@${swellPeriod}s ${swellDir}`;
-    hubClient.sendChannelMessage(msg.channelIdx, truncate(msg1));
-
-    // Wind & wave message
     const windSpeed = wind.current.wind_speed_10m || '';
     const windDir = degToCompass(wind.current.wind_direction_10m || 0);
     const gust = wind.current.wind_gusts_10m || '';
     const waveHeightFt = metersToFeet(marine.current.wave_height || 0);
     const waveDir = degToCompass(marine.current.wave_direction || 0);
     const wavePeriod = marine.current.wave_period || '';
-    const msg2 = `Wind: ${windSpeed} mph ${windDir} gusts ${gust} | Waves: ${waveHeightFt}ft@${wavePeriod}s ${waveDir}`;
-    hubClient.sendChannelMessage(msg.channelIdx, truncate(msg2));
+    const msg1 = `@${requester}: ${primary.spot.name} (${primary.dist.toFixed(1)}mi) Swl ${swellHeightFt}ft@${swellPeriod}s ${swellDir} Wnd ${windSpeed}mph ${windDir} g${gust} Wav ${waveHeightFt}ft@${wavePeriod}s ${waveDir}`;
+    hubClient.sendChannelMessage(msg.channelIdx, truncate(msg1));
 
     // Tide message – use NOAA format (v, t)
     function formatTideTime(t24) {
