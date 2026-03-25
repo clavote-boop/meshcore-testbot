@@ -5,7 +5,7 @@ import HubClient from './hub-client.js';
 
 const MY_NODE = process.env.MY_NODE_NAME || 'Clem Heavyside';
 const MAX_MSG_BYTES = 190;
-const ALLOWED = [1, 4]; // test and GUZMAN channels
+const ALLOWED = [4]; // GUZMAN channel only
 
 const hub = new HubClient('testbot');
 
