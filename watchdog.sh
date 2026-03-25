@@ -6,7 +6,7 @@ BOTDIR="/home/joe/meshcore-bots"
 LOGDIR="/tmp"
 WATCHDOG_LOG="$LOGDIR/meshcore-watchdog.log"
 HUB="mesh-hub.js"
-BOTS=("bot-quotebot.js" "bot-weatherbot.js" "bot-quakebot-v2.js" "bot-quakealert.js" "bot-gasbot.js" "bot-surfbot.js")
+BOTS=("bot-quotebot.js" "bot-weatherbot.js" "bot-quakebot-v2.js" "bot-quakealert.js" "bot-gasbot.js" "bot-surfbot.js" "bot-testbot.js")
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$WATCHDOG_LOG"

@@ -5,7 +5,7 @@
 BOTDIR="/home/joe/meshcore-bots"
 LOGDIR="/tmp"
 HUB="mesh-hub.js"
-BOTS=("bot-quotebot.js" "bot-weatherbot.js" "bot-quakebot-v2.js" "bot-quakealert.js" "bot-gasbot.js" "bot-surfbot.js")
+BOTS=("bot-quotebot.js" "bot-weatherbot.js" "bot-quakebot-v2.js" "bot-quakealert.js" "bot-gasbot.js" "bot-surfbot.js" "bot-testbot.js")
 
 start_hub() {
     if pgrep -f "$HUB" > /dev/null 2>&1; then
