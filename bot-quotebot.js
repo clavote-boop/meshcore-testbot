@@ -56,6 +56,8 @@ hub.on('hub_state', (state) => {
 });
 
 hub.on('channel_message', (msg) => {
+    const ALLOWED = [1, 4];
+    if (!ALLOWED.includes(msg.channelIdx)) return;
  // Skip our own messages
  const msgKey = (msg.timestamp || 0) + ":" + (msg.text || ""); if (seenMessages.has(msgKey)) return; seenMessages.add(msgKey); setTimeout(() => seenMessages.delete(msgKey), 30000);
  if (msg.senderName === MY_NODE_NAME) return;

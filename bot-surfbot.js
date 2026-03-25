@@ -119,6 +119,8 @@ function sendEndOrMore(ch, requester, sess) {
 }
 
 hubClient.on('channel_message', async (msg) => {
+  const ALLOWED = [1, 4];
+  if (!ALLOWED.includes(msg.channelIdx)) return;
   const text = (msg.text || '').trim();
   const colonIdx = text.indexOf(': ');
   const requester = colonIdx > 0 ? text.substring(0, colonIdx) : (msg.senderName || 'anon');

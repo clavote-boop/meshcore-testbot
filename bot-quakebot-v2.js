@@ -101,6 +101,8 @@ function randomQuip() {
 }
 
 hub.on('channel_message', async (msg) => {
+    const ALLOWED = [1, 4];
+    if (!ALLOWED.includes(msg.channelIdx)) return;
   if (msg.senderName === MY_NODE_NAME) return;
 
   const text = (msg.text || '').trim();
