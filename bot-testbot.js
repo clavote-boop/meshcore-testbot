@@ -433,29 +433,10 @@ const QUIPS = [
 
 let userCounts = new Map();
 let quipIndex = 0;
-let meshNodes = 0;
-let meshTx = 0;
 
-async function fetchMeshStats() {
-  try {
-    const resp = await fetch('https://livemap.wcmesh.com/snapshot');
-    const data = await resp.json();
-    // Total devices (nodes) – assume data.devices is an array
-    meshNodes = Array.isArray(data.devices) ? data.devices.length : 0;
-    // Sum of history_edges[].count – assume data.history_edges is an array of objects with count
-    if (Array.isArray(data.history_edges)) {
-      meshTx = data.history_edges.reduce((sum, edge) => sum + (Number(edge.count) || 0), 0);
-    } else {
-      meshTx = 0;
-    }
-  } catch (e) {
-    hub.log(`Failed to fetch mesh stats: ${e.message}`);
-  }
-}
 
-// Initial fetch and schedule every 10 minutes (600000 ms)
-fetchMeshStats();
-setInterval(fetchMeshStats, 10 * 60 * 1000);
+
+
 
 hub.on('hub_state', (state) => {
   hub.log(`Hub state: connected=${state.connected}, channels=${state.channels?.length || 0}`);
@@ -475,20 +456,27 @@ hub.on('channel_message', (msg) => {
  if (senderName === MY_NODE) return;
  if (!/^test$/i.test(command)) return;
 
- // Update per‑user count, reset on new UTC day
+ // Update per‑channel count, reset on new UTC day
  const today = new Date().toISOString().slice(0, 10);
  let entry = userCounts.get(senderName);
  if (!entry || entry.lastReset !== today) {
-    entry = { count: 0, lastReset: today };
+    entry = { ch1: 0, ch4: 0, lastReset: today };
     userCounts.set(senderName, entry);
   }
-  entry.count += 1;
+ // Increment per channel
+ if (msg.channelIdx === 1) entry.ch1 += 1;
+ if (msg.channelIdx === 4) entry.ch4 += 1;
 
-  // Pick next quip
-  const quip = QUIPS[quipIndex];
-  quipIndex = (quipIndex + 1) % QUIPS.length;
+ // Extract path info
+ const hops = msg.pathLen ? (msg.pathLen & 63) : 0;
+ const pathMi = msg.pathLen ? ((msg.pathLen & 63) * 0.621371).toFixed(1) : '0.0';
+ const hopStr = hops > 0 ? hops + ' hop ' + pathMi + 'mi' : 'direct';
 
-  const response = `@${senderName} | Testbot: ${quip} [Tests today: ${entry.count} | Mesh: ${meshTx} tx / ${meshNodes} nodes]`;
+ // Pick next quip
+ const quip = QUIPS[quipIndex];
+ quipIndex = (quipIndex + 1) % QUIPS.length;
+
+ const response = `@${senderName} | Testbot: ${quip} [${hopStr}] [#test:${entry.ch1} #guzman:${entry.ch4}]`;
 
   // Send response (respect max message size)
   if (response.length > MAX_MSG_BYTES) {
