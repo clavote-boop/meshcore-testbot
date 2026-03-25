@@ -144,6 +144,7 @@ hubClient.on('channel_message', async (msg) => {
         ]);
         const swellHeightFt = metersToFeet(marine.current.swell_wave_height || 0);
         const swellDir = degToCompass(marine.current.swell_wave_direction || 0);
+        const swellDeg = Math.round(marine.current.swell_wave_direction || 0);
         const windSpeed = wind.current.wind_speed_10m || '';
         const windDir = degToCompass(wind.current.wind_direction_10m || 0);
         // Use first tide prediction for compact view
@@ -153,7 +154,7 @@ hubClient.on('channel_message', async (msg) => {
           const time = p.t.split(' ')[1].replace(/^0/, '');
           tideStr = `${p.type} ${p.v}ft @${time}`;
         }
-        const msgTxt = `@${requester}: ${spot.name} (${dist.toFixed(1)}mi) Swell ${swellHeightFt}ft ${swellDir} Wind ${windSpeed}mph ${windDir} | Tide ${tideStr}`;
+        const msgTxt = `@${requester}: ${spot.name} (${dist.toFixed(1)}mi) Swell ${swellHeightFt}ft ${swellDeg}deg${swellDir} Wind ${windSpeed}mph ${windDir} | Tide ${tideStr}`;
         hubClient.sendChannelMessage(msg.channelIdx, truncate(msgTxt));
       } catch (e) {
         hubClient.sendChannelMessage(msg.channelIdx, `@${requester}: Surfbot error - ${e.message}`);
@@ -205,7 +206,7 @@ hubClient.on('channel_message', async (msg) => {
     const waveHeightFt = metersToFeet(marine.current.wave_height || 0);
     const waveDir = degToCompass(marine.current.wave_direction || 0);
     const wavePeriod = marine.current.wave_period || '';
-    const msg1 = `@${requester}: ${primary.spot.name} (${primary.dist.toFixed(1)}mi) Swl ${swellHeightFt}ft@${swellPeriod}s ${swellDir} Wnd ${windSpeed}mph ${windDir} g${gust} Wav ${waveHeightFt}ft@${wavePeriod}s ${waveDir}`;
+    const msg1 = `@${requester}: ${primary.spot.name} (${primary.dist.toFixed(1)}mi) Swl ${swellHeightFt}ft@${swellPeriod}s ${swellDeg}deg${swellDir} Wnd ${windSpeed}mph ${windDir} g${gust} Wav ${waveHeightFt}ft@${wavePeriod}s ${waveDir}`;
     hubClient.sendChannelMessage(msg.channelIdx, truncate(msg1));
 
     // Tide message – use NOAA format (v, t)
