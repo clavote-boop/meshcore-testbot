@@ -467,17 +467,20 @@ hub.on('hub_state', (state) => {
 });
 
 hub.on('channel_message', (msg) => {
-  if (!ALLOWED.includes(msg.channelIdx)) return;
-  if (msg.senderName === MY_NODE) return;
-  const text = (msg.text || '').trim();
-  if (!/^test$/i.test(text)) return;
+ if (!ALLOWED.includes(msg.channelIdx)) return;
+ const fullText = (msg.text || '').trim();
+ const colonIdx = fullText.indexOf(':');
+ const senderName = colonIdx > 0 ? fullText.substring(0, colonIdx).trim() : (msg.senderName || 'anon');
+ const command = colonIdx > 0 ? fullText.substring(colonIdx + 1).trim() : fullText;
+ if (senderName === MY_NODE) return;
+ if (!/^test$/i.test(command)) return;
 
-  // Update per‑user count, reset on new UTC day
-  const today = new Date().toISOString().slice(0, 10);
-  let entry = userCounts.get(msg.senderName);
-  if (!entry || entry.lastReset !== today) {
+ // Update per‑user count, reset on new UTC day
+ const today = new Date().toISOString().slice(0, 10);
+ let entry = userCounts.get(senderName);
+ if (!entry || entry.lastReset !== today) {
     entry = { count: 0, lastReset: today };
-    userCounts.set(msg.senderName, entry);
+    userCounts.set(senderName, entry);
   }
   entry.count += 1;
 
@@ -485,7 +488,7 @@ hub.on('channel_message', (msg) => {
   const quip = QUIPS[quipIndex];
   quipIndex = (quipIndex + 1) % QUIPS.length;
 
-  const response = `@${msg.senderName} | Testbot: ${quip} [Tests today: ${entry.count} | Mesh: ${meshTx} tx / ${meshNodes} nodes]`;
+  const response = `@${senderName} | Testbot: ${quip} [Tests today: ${entry.count} | Mesh: ${meshTx} tx / ${meshNodes} nodes]`;
 
   // Send response (respect max message size)
   if (response.length > MAX_MSG_BYTES) {
