@@ -101,7 +101,7 @@ function enqueueSend(channelIdx, text) {
 
 // Poll for new messages
 async function pollMessages() {
-  if (fetchingMessages) { setTimeout(pollMessages, 30000); return; }
+  if (fetchingMessages) { setTimeout(pollMessages, 5000); return; }
   if (!connection) return;
  fetchingMessages = true;
  try {
@@ -141,7 +141,7 @@ async function pollMessages() {
  fetchingMessages = false;
 
  // Poll again
- setTimeout(pollMessages, 30000);
+ setTimeout(pollMessages, 5000);
 }
 
 // Refresh contacts cache and broadcast
