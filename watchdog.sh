@@ -12,6 +12,34 @@ log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$WATCHDOG_LOG"
 }
 
+# Check USB radio device
+HEARTBEAT="/tmp/mesh-hub-heartbeat"
+STALE_MINS=15
+if [ ! -e /dev/ttyUSB0 ]; then
+  log "USB radio disconnected - attempting rebind"
+  kill $(pgrep -f "$HUB") 2>/dev/null
+  sleep 1
+  usbip attach -r localhost -b 1-2 2>/dev/null
+  sleep 5
+  if [ -e /dev/ttyUSB0 ]; then
+    log "USB radio restored"
+    sg dialout -c "cd $BOTDIR && nohup node $HUB >> $LOGDIR/mesh-hub.log 2>&1 &"
+    sleep 2
+  else
+    log "ERROR: USB radio not restored"
+  fi
+fi
+
+# Check hub heartbeat staleness
+if [ -f "$HEARTBEAT" ] && [ -n "$(find "$HEARTBEAT" -mmin +$STALE_MINS 2>/dev/null)" ]; then
+  log "Hub heartbeat stale (>$STALE_MINS min) - restarting hub"
+  kill $(pgrep -f "$HUB") 2>/dev/null
+  sleep 1
+  sg dialout -c "cd $BOTDIR && nohup node $HUB >> $LOGDIR/mesh-hub.log 2>&1 &"
+  sleep 2
+  rm -f "$HEARTBEAT"
+fi
+
 # Check hub
 if ! pgrep -f "$HUB" > /dev/null 2>&1; then
     log "Hub not running, restarting..."

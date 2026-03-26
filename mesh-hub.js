@@ -120,6 +120,7 @@ async function pollMessages() {
  };
  log(`CH msg from ${payload.senderName}: ${payload.text.slice(0,80)}`);
  broadcast(payload);
+        try { fs.writeFileSync('/tmp/mesh-hub-heartbeat', String(Date.now())); } catch(e) {}
  }
  if (msg.contactMessage) {
  const dm = msg.contactMessage;
