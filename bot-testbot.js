@@ -431,7 +431,6 @@ const QUIPS = [
   "Testing is the quiet foundation for long‑term success."
 ];
 
-let userCounts = new Map();
 let quipIndex = 0;
 
 
@@ -456,16 +455,6 @@ hub.on('channel_message', (msg) => {
  if (senderName === MY_NODE) return;
  if (!/^test$/i.test(command)) return;
 
- // Update per‑channel count, reset on new UTC day
- const today = new Date().toISOString().slice(0, 10);
- let entry = userCounts.get(senderName);
- if (!entry || entry.lastReset !== today) {
-    entry = { ch1: 0, ch4: 0, lastReset: today };
-    userCounts.set(senderName, entry);
-  }
- // Increment per channel
- if (msg.channelIdx === 1) entry.ch1 += 1;
- if (msg.channelIdx === 4) entry.ch4 += 1;
 
  // Extract path info
  const hops = msg.pathLen ? (msg.pathLen & 63) : 0;
@@ -476,7 +465,7 @@ hub.on('channel_message', (msg) => {
  const quip = QUIPS[quipIndex];
  quipIndex = (quipIndex + 1) % QUIPS.length;
 
- const response = `@${senderName} | Testbot: ${quip} [${hopStr}] [#test:${entry.ch1} #guzman:${entry.ch4}]`;
+ const response = `@${senderName} | Testbot: ${quip} [${hopStr}]`;
 
   // Send response (respect max message size)
   if (response.length > MAX_MSG_BYTES) {
