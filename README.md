@@ -160,6 +160,18 @@ USB Radio (/dev/ttyUSB0)
 
                               The bridge code lives in the separate [meshcore-openclaw-bridge](https://github.com/clavote-boop/meshcore-openclaw-bridge) repo.
 
-                              ## License
+                              ## Credits & Acknowledgments
 
-                              ISC
+This project builds on the work of the [MeshCore](https://github.com/meshcore-dev/MeshCore) community (MIT License). In particular:
+
+- **[meshcore-dev/MeshCore](https://github.com/meshcore-dev/MeshCore)** — The MeshCore firmware and protocol for LoRa packet radios. Our companion radio runs their firmware.
+- **[meshcore-dev/meshcore.js](https://github.com/meshcore-dev/meshcore.js)** (by [@liamcottle](https://github.com/liamcottle)) — The JavaScript library that provides the serial/TCP/BLE connection API used by `mesh-hub.js` and all bot plugins. MIT License.
+- **[OpenClaw](https://openclaw.ai)** — AI agent gateway that powers the fleet management and auto-response capabilities.
+
+Bot connection patterns (command handling, channel messaging, flood adverts) are adapted from the `meshcore.js` examples with modifications for the hub/plugin architecture and OpenClaw integration.
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.
+
+Portions of this code use [`@liamcottle/meshcore.js`](https://github.com/meshcore-dev/meshcore.js) which is also MIT licensed.
