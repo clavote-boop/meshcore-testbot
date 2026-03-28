@@ -19,7 +19,7 @@ if [ ! -e /dev/ttyUSB0 ]; then
   log "USB radio disconnected - attempting rebind"
   kill $(pgrep -f "$HUB") 2>/dev/null
   sleep 1
-  usbip attach -r localhost -b 1-2 2>/dev/null
+  usbipd.exe attach --wsl --busid 1-2 2>/dev/null 2>/dev/null
   sleep 5
   if [ -e /dev/ttyUSB0 ]; then
     log "USB radio restored"
