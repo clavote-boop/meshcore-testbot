@@ -3,3 +3,7 @@ node_modules/
 *.log
 /tmp/
 *.bak*
+__pycache__/
+*.pyc
+*.idem.db
+clem_demo_session.txt

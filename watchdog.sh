@@ -12,24 +12,30 @@ log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$WATCHDOG_LOG"
 }
 
+# Python hub mode: when flag present, watchdog does NOT manage the JS hub
+# (meshhub.py runs as a systemd service instead). USB rebind + bots still managed.
+USE_PY_HUB=""
+if [ -f "$BOTDIR/.use-python-hub" ]; then USE_PY_HUB=1; fi
+
 # Check USB radio device
 HEARTBEAT="/tmp/mesh-hub-heartbeat"
 STALE_MINS=15
 if [ ! -e /dev/ttyUSB0 ]; then
   log "USB radio disconnected - attempting rebind"
-  kill $(pgrep -f "$HUB") 2>/dev/null
+  [ -z "$USE_PY_HUB" ] && kill $(pgrep -f "$HUB") 2>/dev/null
   sleep 1
   usbipd.exe attach --wsl --busid 1-2 2>/dev/null 2>/dev/null
   sleep 5
   if [ -e /dev/ttyUSB0 ]; then
     log "USB radio restored"
-    sg dialout -c "cd $BOTDIR && nohup node $HUB >> $LOGDIR/mesh-hub.log 2>&1 &"
+    [ -z "$USE_PY_HUB" ] && sg dialout -c "cd $BOTDIR && nohup node $HUB >> $LOGDIR/mesh-hub.log 2>&1 &"
     sleep 2
   else
     log "ERROR: USB radio not restored"
   fi
 fi
 
+if [ -z "$USE_PY_HUB" ]; then
 # Check hub heartbeat staleness
 if [ -f "$HEARTBEAT" ] && [ -n "$(find "$HEARTBEAT" -mmin +$STALE_MINS 2>/dev/null)" ]; then
   log "Hub heartbeat stale (>$STALE_MINS min) - restarting hub"
@@ -51,8 +57,14 @@ if ! pgrep -f "$HUB" > /dev/null 2>&1; then
         log "ERROR: Hub failed to restart"
     fi
 fi
+fi
 
-# Check bots
+# Dashboard kill switch: hold bots down while flag present
+KILLED=""
+if [ -f "$BOTDIR/.killed" ]; then KILLED=1; log "Kill flag set - bots held down by dashboard"; fi
+
+# Check bots (skipped when kill flag set)
+if [ -z "$KILLED" ]; then
 for bot in "${BOTS[@]}"; do
     if ! pgrep -f "$bot" > /dev/null 2>&1; then
         log "${bot} not running, restarting..."
@@ -66,3 +78,4 @@ for bot in "${BOTS[@]}"; do
         fi
     fi
 done
+fi
