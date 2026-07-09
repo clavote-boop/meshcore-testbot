@@ -25,6 +25,8 @@ CODEC_RAW, CODEC_DICT, CODEC_DEFLATE, CODEC_CRYPTOPACK = 0, 1, 2, 3
 CHAIN_BTC, CHAIN_EVM, CHAIN_LN = 0x01, 0x02, 0x03
 TXOP_SIGNED_RAW, TXOP_PSBT, TXOP_BOLT11, TXOP_BROADCAST_REQ, TXOP_BROADCAST_ACK, TXOP_BAL_Q, TXOP_BAL_R = range(1, 8)
 CTRL_ACK_BITMAP, CTRL_NACK_ALL, CTRL_COMPLETE = 0x01, 0x02, 0x03
+CTRL_HS_INIT, CTRL_HS_RESP = 0x04, 0x05       # MeshTalkFS handshake (PSK-authenticated ECDH)
+HS_MAX_SKEW_S = 120                            # handshake freshness window
 REASSEMBLY_TTL_S = 120
 IDEMPOTENCY_TTL_S = 3600
 ARQ_MAX_ROUNDS = 5
@@ -297,16 +299,121 @@ def gen_ephemeral_keypair():
             p.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw))
 
 
-def ecdh_session(my_priv, peer_pub):
+def ecdh_session(my_priv, peer_pub, context=b""):
     """Forward-secret (key32, salt8) from an X25519 ECDH of EPHEMERAL keys -> compromising a
     long-term identity later cannot decrypt recorded traffic. Both sides derive the same pair.
-    This is the recommended resolution of the session-key open decision (ECDH over static PSK)."""
+    This is the recommended resolution of the session-key open decision (ECDH over static PSK).
+    `context` (e.g. the handshake id) is folded into the HKDF info to bind the derived
+    session to one specific handshake; default b'' preserves the original derivation."""
     from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from cryptography.hazmat.primitives import hashes
     shared = X25519PrivateKey.from_private_bytes(my_priv).exchange(X25519PublicKey.from_public_bytes(peer_pub))
-    okm = HKDF(algorithm=hashes.SHA256(), length=40, salt=None, info=b"meshspeak-v1-session").derive(shared)
+    okm = HKDF(algorithm=hashes.SHA256(), length=40, salt=None,
+               info=b"meshspeak-v1-session" + context).derive(shared)
     return okm[:32], okm[32:40]
+
+
+# ---- MeshTalkFS: the handshake LIFECYCLE for ecdh_session (closes the session-key
+#      open decision from the 2026-06-10 audit). PSK-authenticated ephemeral ECDH. ----
+def _hs_aad(msg_id, src, dst, ctrl_type):
+    return bytes([MAGIC_VER, F_IS_CONTROL]) + _u16(msg_id) + bytes([src, dst, ctrl_type])
+
+
+def _hs_seal(psk_key, ctrl_type, src, dst, payload):
+    """One handshake control frame: header || nonce12 || AEAD(psk, payload). The AEAD
+    nonce is RANDOM and carried in-frame — handshakes are low-rate, and a random 96-bit
+    nonce avoids keeping counter state under the long-lived PSK (a reused counter after
+    a restart would be fatal; a random-nonce collision is ~2^-48 at millions of
+    handshakes). The header fields ride in the AAD, so they cannot be re-targeted."""
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+    msg_id = int.from_bytes(os.urandom(2), "little")   # frame plumbing only, in AAD
+    nonce = os.urandom(12)
+    ct = ChaCha20Poly1305(psk_key).encrypt(nonce, payload,
+                                           _hs_aad(msg_id, src, dst, ctrl_type))
+    return (bytes([MAGIC_VER, F_IS_CONTROL]) + _u16(msg_id) + bytes([src, dst]) +
+            bytes([ctrl_type, 0]) + nonce + ct)
+
+
+def _hs_open(psk_key, frame):
+    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+    if len(frame) < 8 + 12 + 16:
+        raise ValueError("handshake frame too short")
+    msg_id = _u16r(frame[2:4]); src, dst, ctrl_type = frame[4], frame[5], frame[6]
+    pt = ChaCha20Poly1305(psk_key).decrypt(frame[8:20], frame[20:],
+                                           _hs_aad(msg_id, src, dst, ctrl_type))
+    return ctrl_type, src, dst, pt
+
+
+class MeshTalkFS:
+    """Forward-secret session establishment over the mesh, AUTHENTICATED by the existing
+    pre-shared key. The PSK's job shrinks to authenticating ONE handshake; traffic then
+    runs under an ephemeral-ECDH session, so a LATER compromise of the PSK (or any
+    long-term key) cannot decrypt recorded session traffic. Handshake payloads are
+    AEAD-encrypted under the PSK (ephemeral pubkeys opaque on the air; Poly1305 rejects
+    tamper — no MITM without the PSK; a CURRENT PSK holder remains inside the trust
+    root, unchanged from today). Freshness = HS_MAX_SKEW_S timestamp window; the hs_id
+    is one-shot (a replayed response to a consumed handshake is refused) and is folded
+    into the HKDF so a session is bound to exactly one handshake. Nothing hand-rolled:
+    X25519 + HKDF-SHA256 + ChaCha20-Poly1305 only.
+
+      A: fs = MeshTalkFS(psk, my_addr=1); frame = fs.initiate(dst=2)   # -> send
+      B: sess_b, resp = MeshTalkFS(psk, my_addr=2).respond(frame)      # -> send resp
+      A: sess_a = fs.finish(resp)
+      both: MeshTalkSession(sess["key"], src=me, dst=sess["peer"], salt=sess["salt"])
+    """
+    def __init__(self, psk_key, my_addr, now=None):
+        if len(psk_key) != 32:
+            raise ValueError("psk_key must be 32 bytes")
+        if not (0 <= my_addr <= 0xFF):
+            raise ValueError("my_addr must be 0..255")
+        self.psk, self.me = psk_key, my_addr
+        self._pending = {}                    # hs_id -> (eph_priv, dst, started_ts)
+        self._now = now or time.time
+
+    def initiate(self, dst):
+        hs_id = os.urandom(8)
+        priv, pub = gen_ephemeral_keypair()
+        self._pending[hs_id] = (priv, dst, self._now())
+        payload = hs_id + pub + int(self._now()).to_bytes(8, "big")
+        return _hs_seal(self.psk, CTRL_HS_INIT, self.me, dst, payload)
+
+    def respond(self, frame):
+        ctrl_type, src, dst, pt = _hs_open(self.psk, frame)
+        if ctrl_type != CTRL_HS_INIT:
+            raise ValueError("not an HS_INIT frame")
+        if dst != self.me:
+            raise ValueError("handshake not addressed to me")
+        if len(pt) != 8 + 32 + 8:
+            raise ValueError("bad HS_INIT payload")
+        hs_id, peer_pub, ts = pt[:8], pt[8:40], int.from_bytes(pt[40:48], "big")
+        if abs(self._now() - ts) > HS_MAX_SKEW_S:
+            raise ValueError("stale handshake (outside skew window)")
+        priv, pub = gen_ephemeral_keypair()
+        key, salt = ecdh_session(priv, peer_pub, context=hs_id)
+        payload = hs_id + pub + int(self._now()).to_bytes(8, "big")
+        resp = _hs_seal(self.psk, CTRL_HS_RESP, self.me, src, payload)
+        return {"key": key, "salt": salt, "hs_id": hs_id, "peer": src}, resp
+
+    def finish(self, frame):
+        ctrl_type, src, dst, pt = _hs_open(self.psk, frame)
+        if ctrl_type != CTRL_HS_RESP:
+            raise ValueError("not an HS_RESP frame")
+        if dst != self.me:
+            raise ValueError("response not addressed to me")
+        if len(pt) != 8 + 32 + 8:
+            raise ValueError("bad HS_RESP payload")
+        hs_id, peer_pub, ts = pt[:8], pt[8:40], int.from_bytes(pt[40:48], "big")
+        st = self._pending.pop(hs_id, None)   # one-shot: a replayed RESP is refused
+        if st is None:
+            raise ValueError("unknown or already-consumed hs_id (replay?)")
+        priv, want_dst, _t0 = st
+        if src != want_dst:
+            raise ValueError("response from a different peer than initiated")
+        if abs(self._now() - ts) > HS_MAX_SKEW_S:
+            raise ValueError("stale response (outside skew window)")
+        key, salt = ecdh_session(priv, peer_pub, context=hs_id)
+        return {"key": key, "salt": salt, "hs_id": hs_id, "peer": src}
 
 
 def build_ack_bitmap(msg_id, src, dst, total, bitmap):
@@ -449,6 +556,43 @@ def selftest():
     fr = encode(msg_fs, src=1, dst=2, msg_id=3, frag_payload_max=200, key=ka, session_salt=sa)
     st = FragmentStore(); kk, vv = decode(fr[0], st, key=kb, session_salt=sb)
     chk("ECDH-derived key works end-to-end in encode/decode", kk == "msg" and vv == msg_fs)
+
+    # --- MeshTalkFS: the wired handshake lifecycle (PSK-authenticated ephemeral ECDH) ---
+    psk = os.urandom(32)
+    A = MeshTalkFS(psk, my_addr=1); B = MeshTalkFS(psk, my_addr=2)
+    f_init = A.initiate(dst=2)
+    sB, f_resp = B.respond(f_init)
+    sA = A.finish(f_resp)
+    chk("FS handshake: both sides derive the same session",
+        sA["key"] == sB["key"] and sA["salt"] == sB["salt"] and sA["peer"] == 2 and sB["peer"] == 1)
+    s2B, r2 = B.respond(A.initiate(dst=2)); s2A = A.finish(r2)
+    chk("FS: every handshake yields a fresh key", s2A["key"] != sA["key"])
+    sessA = MeshTalkSession(sA["key"], src=1, dst=2, salt=sA["salt"])
+    frs = sessA.encode(b"post-handshake secret", frag_payload_max=200)
+    st = FragmentStore(); kk, vv = decode(frs[0], st, key=sB["key"], session_salt=sB["salt"])
+    chk("FS session drives encode/decode end-to-end", kk == "msg" and vv == b"post-handshake secret")
+    st = FragmentStore(); r = decode(frs[0], st, key=psk, session_salt=sA["salt"])
+    chk("FS PROPERTY: the PSK alone cannot decrypt session traffic", r[0] == "drop")
+    raised = False
+    try: MeshTalkFS(os.urandom(32), my_addr=2).respond(f_init)
+    except Exception: raised = True
+    chk("FS: handshake refused/opaque without the right PSK", raised)
+    bad = bytearray(A.initiate(dst=2)); bad[-1] ^= 1
+    raised = False
+    try: B.respond(bytes(bad))
+    except Exception: raised = True
+    chk("FS: tampered handshake frame rejected (Poly1305)", raised)
+    raised = False
+    try: A.finish(f_resp)                     # hs_id already consumed above
+    except Exception: raised = True
+    chk("FS: replayed response to a consumed handshake refused", raised)
+    late = MeshTalkFS(psk, my_addr=2, now=lambda: time.time() + HS_MAX_SKEW_S + 60)
+    raised = False
+    try: late.respond(A.initiate(dst=2))
+    except Exception: raised = True
+    chk("FS: stale/out-of-skew handshake rejected", raised)
+    chk("FS: handshake frames pass decode() as control frames (hub-safe)",
+        decode(f_init, FragmentStore())[0] == "control")
 
     # channel-text transport still works
     m2 = b"agent room broadcast nominal " * 3
