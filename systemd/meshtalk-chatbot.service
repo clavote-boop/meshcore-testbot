@@ -1,0 +1,18 @@
+[Unit]
+Description=Clem plaintext LLM channel bot (mesh-hub client; all channels; Bob Heavyside only)
+After=meshhub.service
+Wants=meshhub.service
+
+[Service]
+ExecStart=/usr/bin/python3 /home/joe/meshcore-bots/meshtalk_chatbot.py
+Restart=always
+RestartSec=5
+Environment=MESH_BOT_PROVIDER=venice
+Environment=MESH_BOT_VENICE_MODEL=llama-3.2-3b
+Environment=MESH_BOT_CHANNELS=all
+Environment="MESH_BOT_TRIGGERS=clem heavyside,clem"
+Environment="MESH_BOT_ALLOW=Bob Heavyside"
+Environment=MESH_BOT_COOLDOWN=8
+
+[Install]
+WantedBy=default.target
