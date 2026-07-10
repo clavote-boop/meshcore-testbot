@@ -239,6 +239,8 @@ def llm_reply(sender, query):
         try:
             resp = fn(sender, query)
             resp = " ".join(resp.replace("```", "").split()).strip()
+            if len(resp) > 1 and resp[0] in "\"'" and resp[-1] == resp[0]:
+                resp = resp[1:-1].strip()          # drop a model's self-wrapping quotes
             if resp:
                 return resp[:REPLY_MAX_CHARS]
         except Exception as e:
