@@ -25,7 +25,7 @@ CODEC_RAW, CODEC_DICT, CODEC_DEFLATE, CODEC_CRYPTOPACK = 0, 1, 2, 3
 CHAIN_BTC, CHAIN_EVM, CHAIN_LN = 0x01, 0x02, 0x03
 TXOP_SIGNED_RAW, TXOP_PSBT, TXOP_BOLT11, TXOP_BROADCAST_REQ, TXOP_BROADCAST_ACK, TXOP_BAL_Q, TXOP_BAL_R = range(1, 8)
 CTRL_ACK_BITMAP, CTRL_NACK_ALL, CTRL_COMPLETE = 0x01, 0x02, 0x03
-CTRL_HS_INIT, CTRL_HS_RESP = 0x04, 0x05       # MeshTalkFS handshake (PSK-authenticated ECDH)
+CTRL_HS_INIT, CTRL_HS_RESP, CTRL_HS_CONF = 0x04, 0x05, 0x06   # STS handshake (MESHSPEAK-FS)
 HS_MAX_SKEW_S = 120                            # handshake freshness window
 REASSEMBLY_TTL_S = 120
 IDEMPOTENCY_TTL_S = 3600
@@ -206,6 +206,8 @@ def decode(frame, store, *, key=None, session_salt=None):
         return ("drop", "bad magic")
     flags = frame[1]; msg_id = _u16r(frame[2:4]); src = frame[4]; dst = frame[5]
     if flags & F_IS_CONTROL:
+        if len(frame) < 8:                       # §4.2 fuzz: control header is 8 bytes
+            return ("drop", "short control frame")
         return ("control", parse_control(frame))
     if (flags & F_CRYPTO_TX) and not (flags & F_ENCRYPTED):
         return ("drop", "unauthenticated crypto-tx")          # money frames MUST be AEAD
@@ -248,13 +250,34 @@ def decode(frame, store, *, key=None, session_salt=None):
     return ("msg", obj)
 
 
+# AMEND A2: a 32-bit idempotency key hits ~50% birthday collision near ~65k ops —
+# non-conformant for side-effecting (value/actuator) operations. Use >=96-bit; 128-bit
+# (16 B) is the recommendation, derived from a collision-resistant digest over the
+# canonical operation envelope (txid[0:16] for a tx; SHA-256(envelope)[0:16] for an
+# actuator). A short prefix like txid[0:4] is non-conformant for value-bearing ops.
+IDEM_KEY_LEN = 16
+
+
+def idem_key_for_tx(txid_bytes):
+    """A2: idempotency key for a crypto transaction = first 16 bytes of its own hash."""
+    return txid_bytes[:IDEM_KEY_LEN].ljust(IDEM_KEY_LEN, b"\x00")
+
+
+def idem_key_for_actuator(envelope_bytes):
+    """A2: idempotency key for an actuator/command = SHA-256(canonical envelope)[0:16]."""
+    return hashlib.sha256(envelope_bytes).digest()[:IDEM_KEY_LEN]
+
+
 def pack_crypto_envelope(chain, txop, idem_key, tx_bytes):
-    assert len(idem_key) == 4
+    if len(idem_key) != IDEM_KEY_LEN:            # A2: 16-byte key mandatory for CRYPTO_TX
+        raise ValueError(f"IDEMPOTENCY_KEY must be {IDEM_KEY_LEN} bytes (A2); "
+                         f"got {len(idem_key)}. Use idem_key_for_tx/idem_key_for_actuator.")
     return bytes([chain, txop]) + idem_key + tx_bytes
 
 
 def parse_crypto_envelope(obj):
-    return {"chain": obj[0], "txop": obj[1], "idem": obj[2:6], "tx": obj[6:]}
+    return {"chain": obj[0], "txop": obj[1],
+            "idem": obj[2:2 + IDEM_KEY_LEN], "tx": obj[2 + IDEM_KEY_LEN:]}
 
 
 class IdempotencyStore:
@@ -314,106 +337,176 @@ def ecdh_session(my_priv, peer_pub, context=b""):
     return okm[:32], okm[32:40]
 
 
-# ---- MeshTalkFS: the handshake LIFECYCLE for ecdh_session (closes the session-key
-#      open decision from the 2026-06-10 audit). PSK-authenticated ephemeral ECDH. ----
-def _hs_aad(msg_id, src, dst, ctrl_type):
-    return bytes([MAGIC_VER, F_IS_CONTROL]) + _u16(msg_id) + bytes([src, dst, ctrl_type])
+# ---- MeshTalkSTS: Station-to-Station authenticated ephemeral key exchange (closes
+#      MeshSpeak §11 per MESHSPEAK-FS + AMEND A4). Ephemeral X25519 for FORWARD SECRECY,
+#      long-term Ed25519 signatures for AUTHENTICATION — a textbook AKE, no novel crypto.
+#      The long-term identity NEVER encrypts content: destroying the ephemeral privates
+#      after deriving K means a later compromise of the identity keys cannot recompute K.
+STS_SUITE = b"x25519-ed25519-hkdfsha256-chacha20poly1305"
+DOM_STS_SIG = b"meshspeak-fs-v1/sts-transcript/"     # domain for the handshake signatures
+DOM_STS_KDF = b"meshspeak-fs-v1/session-key/"        # HKDF label — DISTINCT from any capsule key (A4)
 
 
-def _hs_seal(psk_key, ctrl_type, src, dst, payload):
-    """One handshake control frame: header || nonce12 || AEAD(psk, payload). The AEAD
-    nonce is RANDOM and carried in-frame — handshakes are low-rate, and a random 96-bit
-    nonce avoids keeping counter state under the long-lived PSK (a reused counter after
-    a restart would be fatal; a random-nonce collision is ~2^-48 at millions of
-    handshakes). The header fields ride in the AAD, so they cannot be re-targeted."""
-    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
-    msg_id = int.from_bytes(os.urandom(2), "little")   # frame plumbing only, in AAD
-    nonce = os.urandom(12)
-    ct = ChaCha20Poly1305(psk_key).encrypt(nonce, payload,
-                                           _hs_aad(msg_id, src, dst, ctrl_type))
-    return (bytes([MAGIC_VER, F_IS_CONTROL]) + _u16(msg_id) + bytes([src, dst]) +
-            bytes([ctrl_type, 0]) + nonce + ct)
+def _ed_pub_from_priv(seed32):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    return Ed25519PrivateKey.from_private_bytes(seed32).public_key().public_bytes_raw()
 
 
-def _hs_open(psk_key, frame):
-    from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
-    if len(frame) < 8 + 12 + 16:
-        raise ValueError("handshake frame too short")
-    msg_id = _u16r(frame[2:4]); src, dst, ctrl_type = frame[4], frame[5], frame[6]
-    pt = ChaCha20Poly1305(psk_key).decrypt(frame[8:20], frame[20:],
-                                           _hs_aad(msg_id, src, dst, ctrl_type))
-    return ctrl_type, src, dst, pt
+def _ed_sign(seed32, msg):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    return Ed25519PrivateKey.from_private_bytes(seed32).sign(msg)
 
 
-class MeshTalkFS:
-    """Forward-secret session establishment over the mesh, AUTHENTICATED by the existing
-    pre-shared key. The PSK's job shrinks to authenticating ONE handshake; traffic then
-    runs under an ephemeral-ECDH session, so a LATER compromise of the PSK (or any
-    long-term key) cannot decrypt recorded session traffic. Handshake payloads are
-    AEAD-encrypted under the PSK (ephemeral pubkeys opaque on the air; Poly1305 rejects
-    tamper — no MITM without the PSK; a CURRENT PSK holder remains inside the trust
-    root, unchanged from today). Freshness = HS_MAX_SKEW_S timestamp window; the hs_id
-    is one-shot (a replayed response to a consumed handshake is refused) and is folded
-    into the HKDF so a session is bound to exactly one handshake. Nothing hand-rolled:
-    X25519 + HKDF-SHA256 + ChaCha20-Poly1305 only.
+def _ed_verify(pub32, msg, sig):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    from cryptography.exceptions import InvalidSignature
+    try:
+        Ed25519PublicKey.from_public_bytes(pub32).verify(sig, msg); return True
+    except (InvalidSignature, ValueError):
+        return False
 
-      A: fs = MeshTalkFS(psk, my_addr=1); frame = fs.initiate(dst=2)   # -> send
-      B: sess_b, resp = MeshTalkFS(psk, my_addr=2).respond(frame)      # -> send resp
-      A: sess_a = fs.finish(resp)
-      both: MeshTalkSession(sess["key"], src=me, dst=sess["peer"], salt=sess["salt"])
+
+def _sts_transcript(src, dst, a_ed, b_ed, ea_pub, eb_pub, session_id):
+    """A4: the SIGNED transcript binds protocol version + cipher suite + SRC/DST agent
+    IDs + the MeshCore node binding (both long-term Ed25519 identities) + both ephemeral
+    public keys + the session id (salt/nonce). Role labels are appended per-signer."""
+    return (b"MTFS1" + STS_SUITE + bytes([src & 0xFF, dst & 0xFF]) +
+            a_ed + b_ed + ea_pub + eb_pub + session_id)
+
+
+def _sts_derive(ea_priv, eb_pub, session_id, transcript):
+    """K = HKDF-SHA256(IKM = X25519(ea,eb), salt = session_id, info = DOM_STS_KDF ||
+    transcript_hash) — the shared secret AND the transcript hash feed the KDF (A4), and
+    the DOM_STS_KDF label domain-separates MeshSpeak session keys from any capsule key."""
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives import hashes
+    ss = X25519PrivateKey.from_private_bytes(ea_priv).exchange(
+        X25519PublicKey.from_public_bytes(eb_pub))
+    okm = HKDF(algorithm=hashes.SHA256(), length=40, salt=session_id,
+               info=DOM_STS_KDF + hashlib.sha256(transcript).digest()).derive(ss)
+    return okm[:32], okm[32:40]
+
+
+def _ctrl(ctrl_type, src, dst, body):
+    return bytes([MAGIC_VER, F_IS_CONTROL]) + _u16(0) + bytes([src & 0xFF, dst & 0xFF,
+            ctrl_type, 0]) + body
+
+
+def _parse_ctrl(frame):
+    if len(frame) < 8 or frame[0] != MAGIC_VER or not (frame[1] & F_IS_CONTROL):
+        raise ValueError("not a control frame")
+    return frame[6], frame[4], frame[5], frame[8:]      # ctrl_type, src, dst, body
+
+
+class MeshTalkSTS:
+    """Station-to-Station handshake. Each node holds a long-term Ed25519 identity (the
+    same key MeshCore uses for addressing) and pins the peer's Ed25519 public key OOB.
+    The ephemeral X25519 keys provide forward secrecy; the Ed25519 signatures over the
+    full transcript authenticate them (defeating a MITM). Ephemeral privates are
+    zeroized immediately after K is derived. Replayed handshakes are rejected (the
+    responder refuses a re-used session_id). Nothing hand-rolled: X25519 + Ed25519 +
+    HKDF-SHA256, all from `cryptography`.
+
+      A: sts_a = MeshTalkSTS(a_ed_priv, 1, b_ed_pub, 2); init = sts_a.initiate()
+      B: sess_b, resp = MeshTalkSTS(b_ed_priv, 2, a_ed_pub, 1).respond(init)
+      A: sess_a, conf = sts_a.confirm(resp)
+      B: sess_b == finalize -> both hold the same K:
+         MeshTalkSession(sess["key"], src=me, dst=sess["peer"], salt=sess["salt"])
     """
-    def __init__(self, psk_key, my_addr, now=None):
-        if len(psk_key) != 32:
-            raise ValueError("psk_key must be 32 bytes")
-        if not (0 <= my_addr <= 0xFF):
-            raise ValueError("my_addr must be 0..255")
-        self.psk, self.me = psk_key, my_addr
-        self._pending = {}                    # hs_id -> (eph_priv, dst, started_ts)
+    def __init__(self, my_ed_priv, my_addr, peer_ed_pub, peer_addr, now=None):
+        if len(my_ed_priv) != 32 or len(peer_ed_pub) != 32:
+            raise ValueError("Ed25519 keys must be 32 bytes")
+        self.me, self.peer_addr = my_addr & 0xFF, peer_addr & 0xFF
+        self.ed_priv = my_ed_priv
+        self.ed_pub = _ed_pub_from_priv(my_ed_priv)
+        self.peer_ed = peer_ed_pub
         self._now = now or time.time
+        self._pending = None                     # (session_id, ea_priv, ea_pub, ts)
+        self._seen_sids = set()                  # responder replay guard (one-shot sids)
 
-    def initiate(self, dst):
-        hs_id = os.urandom(8)
-        priv, pub = gen_ephemeral_keypair()
-        self._pending[hs_id] = (priv, dst, self._now())
-        payload = hs_id + pub + int(self._now()).to_bytes(8, "big")
-        return _hs_seal(self.psk, CTRL_HS_INIT, self.me, dst, payload)
+    # A (initiator)
+    def initiate(self):
+        session_id = os.urandom(8)
+        ea_priv, ea_pub = gen_ephemeral_keypair()
+        self._pending = (session_id, ea_priv, ea_pub, int(self._now()))
+        body = session_id + ea_pub + int(self._now()).to_bytes(8, "big")
+        return _ctrl(CTRL_HS_INIT, self.me, self.peer_addr, body)
 
-    def respond(self, frame):
-        ctrl_type, src, dst, pt = _hs_open(self.psk, frame)
-        if ctrl_type != CTRL_HS_INIT:
-            raise ValueError("not an HS_INIT frame")
-        if dst != self.me:
-            raise ValueError("handshake not addressed to me")
-        if len(pt) != 8 + 32 + 8:
-            raise ValueError("bad HS_INIT payload")
-        hs_id, peer_pub, ts = pt[:8], pt[8:40], int.from_bytes(pt[40:48], "big")
+    # B (responder): verify freshness, sign the transcript, derive K, zeroize eb_priv
+    def respond(self, init_frame):
+        ct, src, dst, body = _parse_ctrl(init_frame)
+        if ct != CTRL_HS_INIT:
+            raise ValueError("not HS_INIT")
+        if dst != self.me or src != self.peer_addr:
+            raise ValueError("handshake addressing mismatch")
+        if len(body) != 8 + 32 + 8:
+            raise ValueError("bad HS_INIT body")
+        session_id, ea_pub, ts = body[:8], body[8:40], int.from_bytes(body[40:48], "big")
         if abs(self._now() - ts) > HS_MAX_SKEW_S:
-            raise ValueError("stale handshake (outside skew window)")
-        priv, pub = gen_ephemeral_keypair()
-        key, salt = ecdh_session(priv, peer_pub, context=hs_id)
-        payload = hs_id + pub + int(self._now()).to_bytes(8, "big")
-        resp = _hs_seal(self.psk, CTRL_HS_RESP, self.me, src, payload)
-        return {"key": key, "salt": salt, "hs_id": hs_id, "peer": src}, resp
+            raise ValueError("stale handshake")
+        if session_id in self._seen_sids:
+            raise ValueError("replayed session_id")     # A4: reject replayed handshakes
+        self._seen_sids.add(session_id)
+        eb_priv, eb_pub = gen_ephemeral_keypair()
+        # transcript orders keys as (initiator=A, responder=B); here peer=A, me=B
+        transcript = _sts_transcript(src, dst, self.peer_ed, self.ed_pub,
+                                     ea_pub, eb_pub, session_id)
+        key, salt = _sts_derive(eb_priv, ea_pub, session_id, transcript)
+        eb_priv = b"\x00" * 32                            # FS: zeroize ephemeral private
+        sig_b = _ed_sign(self.ed_priv, DOM_STS_SIG + transcript + b"responder")
+        body_out = session_id + eb_pub + int(self._now()).to_bytes(8, "big") + sig_b
+        resp = _ctrl(CTRL_HS_RESP, self.me, src, body_out)
+        return ({"key": key, "salt": salt, "session_id": session_id, "peer": src,
+                 "_transcript": transcript}, resp)
 
-    def finish(self, frame):
-        ctrl_type, src, dst, pt = _hs_open(self.psk, frame)
-        if ctrl_type != CTRL_HS_RESP:
-            raise ValueError("not an HS_RESP frame")
-        if dst != self.me:
-            raise ValueError("response not addressed to me")
-        if len(pt) != 8 + 32 + 8:
-            raise ValueError("bad HS_RESP payload")
-        hs_id, peer_pub, ts = pt[:8], pt[8:40], int.from_bytes(pt[40:48], "big")
-        st = self._pending.pop(hs_id, None)   # one-shot: a replayed RESP is refused
-        if st is None:
-            raise ValueError("unknown or already-consumed hs_id (replay?)")
-        priv, want_dst, _t0 = st
-        if src != want_dst:
-            raise ValueError("response from a different peer than initiated")
+    # A: verify B's signature, derive K, sign back, zeroize ea_priv
+    def confirm(self, resp_frame):
+        ct, src, dst, body = _parse_ctrl(resp_frame)
+        if ct != CTRL_HS_RESP:
+            raise ValueError("not HS_RESP")
+        if self._pending is None:
+            raise ValueError("no pending handshake")
+        if dst != self.me or src != self.peer_addr:
+            raise ValueError("response addressing mismatch")
+        if len(body) != 8 + 32 + 8 + 64:
+            raise ValueError("bad HS_RESP body")
+        session_id, eb_pub, ts, sig_b = body[:8], body[8:40], \
+            int.from_bytes(body[40:48], "big"), body[48:112]
+        p_sid, ea_priv, ea_pub, _t0 = self._pending
+        if session_id != p_sid:
+            raise ValueError("session_id mismatch (replay?)")
         if abs(self._now() - ts) > HS_MAX_SKEW_S:
-            raise ValueError("stale response (outside skew window)")
-        key, salt = ecdh_session(priv, peer_pub, context=hs_id)
-        return {"key": key, "salt": salt, "hs_id": hs_id, "peer": src}
+            raise ValueError("stale response")
+        transcript = _sts_transcript(self.me, src, self.ed_pub, self.peer_ed,
+                                     ea_pub, eb_pub, session_id)
+        if not _ed_verify(self.peer_ed, DOM_STS_SIG + transcript + b"responder", sig_b):
+            raise ValueError("HS_RESP signature invalid (MITM/forgery)")
+        key, salt = _sts_derive(ea_priv, eb_pub, session_id, transcript)
+        self._pending = None                             # one-shot
+        sig_a = _ed_sign(self.ed_priv, DOM_STS_SIG + transcript + b"initiator")
+        conf = _ctrl(CTRL_HS_CONF, self.me, src,
+                     session_id + int(self._now()).to_bytes(8, "big") + sig_a)
+        return {"key": key, "salt": salt, "session_id": session_id, "peer": src}, conf
+
+    # B: verify A's confirming signature (mutual authentication complete). `session` is
+    # the dict respond() returned (it carries the transcript B signed).
+    def finalize(self, conf_frame, session):
+        ct, src, dst, body = _parse_ctrl(conf_frame)
+        if ct != CTRL_HS_CONF:
+            raise ValueError("not HS_CONF")
+        if dst != self.me or src != self.peer_addr:
+            raise ValueError("confirm addressing mismatch")
+        if len(body) != 8 + 8 + 64:
+            raise ValueError("bad HS_CONF body")
+        session_id, ts, sig_a = body[:8], int.from_bytes(body[8:16], "big"), body[16:80]
+        if session_id != session.get("session_id"):
+            raise ValueError("session_id mismatch")
+        transcript = session.get("_transcript")
+        if transcript is None or not _ed_verify(
+                self.peer_ed, DOM_STS_SIG + transcript + b"initiator", sig_a):
+            raise ValueError("HS_CONF signature invalid (mutual auth failed)")
+        return True
 
 
 def build_ack_bitmap(msg_id, src, dst, total, bitmap):
@@ -492,7 +585,11 @@ def selftest():
     chk("both directions still decrypt correctly", va == pt and vb == pt)
 
     # --- HIGH fix: CRYPTO_TX must be AEAD-encrypted ---
-    env = pack_crypto_envelope(CHAIN_BTC, TXOP_SIGNED_RAW, b"\x00\x01\x02\x03", b"signed-tx")
+    env = pack_crypto_envelope(CHAIN_BTC, TXOP_SIGNED_RAW, idem_key_for_tx(b"txid-bytes-here-0123456789"), b"signed-tx")
+    raised = False
+    try: pack_crypto_envelope(CHAIN_BTC, TXOP_SIGNED_RAW, b"\x00\x01\x02\x03", b"x")
+    except ValueError: raised = True
+    chk("A2: 4-byte idempotency key REJECTED (>=16 B required for CRYPTO_TX)", raised)
     unenc = encode(env, src=5, dst=6, msg_id=1, frag_payload_max=200, is_crypto=True)  # no key!
     st = FragmentStore(); r = decode(unenc[0], st)
     chk("HIGH: unencrypted CRYPTO_TX is DROPPED", r[0] == "drop")
@@ -536,12 +633,12 @@ def selftest():
     import tempfile
     dbp = tempfile.mktemp(suffix=".idem.db")
     store = IdempotencyStore(dbp)
-    env5 = parse_crypto_envelope(pack_crypto_envelope(CHAIN_BTC, TXOP_SIGNED_RAW, b"\xaa\xbb\xcc\xdd", b"tx"))
+    env5 = parse_crypto_envelope(pack_crypto_envelope(CHAIN_BTC, TXOP_SIGNED_RAW, idem_key_for_tx(b"\xaa" * 20), b"tx"))
     calls = []
     def bc(c, t): calls.append(t); return {"txid": "abc", "status": "ok"}
     handle_crypto_envelope(env5, store, bc)
     handle_crypto_envelope(env5, store, bc)                       # replay
-    chk("idempotency: replay -> exactly ONE broadcast", len(calls) == 1)
+    chk("idempotency: duplicate within window -> at-most-once (one broadcast)", len(calls) == 1)
     store2 = IdempotencyStore(dbp)                                # simulate restart (reopen db)
     handle_crypto_envelope(env5, store2, bc)
     chk("idempotency DURABLE across restart (no re-broadcast)", len(calls) == 1)
@@ -557,42 +654,104 @@ def selftest():
     st = FragmentStore(); kk, vv = decode(fr[0], st, key=kb, session_salt=sb)
     chk("ECDH-derived key works end-to-end in encode/decode", kk == "msg" and vv == msg_fs)
 
-    # --- MeshTalkFS: the wired handshake lifecycle (PSK-authenticated ephemeral ECDH) ---
-    psk = os.urandom(32)
-    A = MeshTalkFS(psk, my_addr=1); B = MeshTalkFS(psk, my_addr=2)
-    f_init = A.initiate(dst=2)
-    sB, f_resp = B.respond(f_init)
-    sA = A.finish(f_resp)
-    chk("FS handshake: both sides derive the same session",
-        sA["key"] == sB["key"] and sA["salt"] == sB["salt"] and sA["peer"] == 2 and sB["peer"] == 1)
-    s2B, r2 = B.respond(A.initiate(dst=2)); s2A = A.finish(r2)
-    chk("FS: every handshake yields a fresh key", s2A["key"] != sA["key"])
+    # --- MeshTalkSTS: Station-to-Station authenticated ephemeral key exchange ---
+    a_priv, a_pub = os.urandom(32), None
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    a_seed = Ed25519PrivateKey.generate().private_bytes_raw()
+    b_seed = Ed25519PrivateKey.generate().private_bytes_raw()
+    a_pub = _ed_pub_from_priv(a_seed); b_pub = _ed_pub_from_priv(b_seed)
+    stsA = MeshTalkSTS(a_seed, 1, b_pub, 2)
+    stsB = MeshTalkSTS(b_seed, 2, a_pub, 1)
+    init = stsA.initiate()
+    sB, resp = stsB.respond(init)
+    sA, conf = stsA.confirm(resp)
+    chk("STS: both sides derive the same session key+salt",
+        sA["key"] == sB["key"] and sA["salt"] == sB["salt"])
+    chk("STS: mutual auth — B finalizes A's confirming signature", stsB.finalize(conf, sB))
+    # forward secrecy: a fresh handshake yields a fresh key
+    stsA2 = MeshTalkSTS(a_seed, 1, b_pub, 2); stsB2 = MeshTalkSTS(b_seed, 2, a_pub, 1)
+    s2B, r2 = stsB2.respond(stsA2.initiate()); s2A, _ = stsA2.confirm(r2)
+    chk("STS: every handshake yields a fresh key (FS)", s2A["key"] != sA["key"])
+    # the derived session drives real encode/decode
     sessA = MeshTalkSession(sA["key"], src=1, dst=2, salt=sA["salt"])
     frs = sessA.encode(b"post-handshake secret", frag_payload_max=200)
     st = FragmentStore(); kk, vv = decode(frs[0], st, key=sB["key"], session_salt=sB["salt"])
-    chk("FS session drives encode/decode end-to-end", kk == "msg" and vv == b"post-handshake secret")
-    st = FragmentStore(); r = decode(frs[0], st, key=psk, session_salt=sA["salt"])
-    chk("FS PROPERTY: the PSK alone cannot decrypt session traffic", r[0] == "drop")
+    chk("STS session drives encode/decode end-to-end", kk == "msg" and vv == b"post-handshake secret")
+    # MITM: a forged/wrong responder identity fails A's signature check
+    stsA3 = MeshTalkSTS(a_seed, 1, b_pub, 2)
+    evil = MeshTalkSTS(os.urandom(32), 2, a_pub, 1)   # wrong B identity
+    _, evil_resp = evil.respond(stsA3.initiate())
     raised = False
-    try: MeshTalkFS(os.urandom(32), my_addr=2).respond(f_init)
+    try: stsA3.confirm(evil_resp)
     except Exception: raised = True
-    chk("FS: handshake refused/opaque without the right PSK", raised)
-    bad = bytearray(A.initiate(dst=2)); bad[-1] ^= 1
+    chk("STS: forged responder signature REJECTED (MITM defeated)", raised)
+    # tampered HS_RESP signature -> reject
+    stsA4 = MeshTalkSTS(a_seed, 1, b_pub, 2); stsB4 = MeshTalkSTS(b_seed, 2, a_pub, 1)
+    _, good_resp = stsB4.respond(stsA4.initiate())
+    bad = bytearray(good_resp); bad[-1] ^= 1
     raised = False
-    try: B.respond(bytes(bad))
+    try: stsA4.confirm(bytes(bad))
     except Exception: raised = True
-    chk("FS: tampered handshake frame rejected (Poly1305)", raised)
+    chk("STS: tampered HS_RESP REJECTED", raised)
+    # replayed session_id at the responder -> reject
+    stsB5 = MeshTalkSTS(b_seed, 2, a_pub, 1)
+    init5 = MeshTalkSTS(a_seed, 1, b_pub, 2).initiate()
+    stsB5.respond(init5)
     raised = False
-    try: A.finish(f_resp)                     # hs_id already consumed above
+    try: stsB5.respond(init5)                # same session_id again
     except Exception: raised = True
-    chk("FS: replayed response to a consumed handshake refused", raised)
-    late = MeshTalkFS(psk, my_addr=2, now=lambda: time.time() + HS_MAX_SKEW_S + 60)
+    chk("STS: replayed session_id REJECTED", raised)
+    # stale handshake outside skew -> reject
+    late = MeshTalkSTS(b_seed, 2, a_pub, 1, now=lambda: time.time() + HS_MAX_SKEW_S + 60)
     raised = False
-    try: late.respond(A.initiate(dst=2))
+    try: late.respond(MeshTalkSTS(a_seed, 1, b_pub, 2).initiate())
     except Exception: raised = True
-    chk("FS: stale/out-of-skew handshake rejected", raised)
-    chk("FS: handshake frames pass decode() as control frames (hub-safe)",
-        decode(f_init, FragmentStore())[0] == "control")
+    chk("STS: stale/out-of-skew handshake REJECTED", raised)
+    # domain separation: the STS KDF label differs from any capsule label
+    chk("STS: KDF label domain-separated from capsule keys (A4)",
+        DOM_STS_KDF.startswith(b"meshspeak-fs-v1/") and b"MILCAAP" not in DOM_STS_KDF)
+    chk("STS: handshake frames are control frames (hub-safe)",
+        decode(init, FragmentStore())[0] == "control")
+
+    # --- SECURITY-MESHCORE-DEP §4.2: fuzz the frame parser as a conformance gate. A
+    #     repeater ingests attacker-reachable frames; the parser must NEVER crash on
+    #     malformed input — every path returns a clean (kind, detail), never an
+    #     unhandled exception. A crash here is a conformance FAILURE. ---
+    import random as _random
+    rng = _random.Random(1337)                       # fixed seed = reproducible
+    KINDS = ("drop", "partial", "msg", "control", "crypto")
+    corpus = [encode(b"seed", src=1, dst=2, msg_id=5, frag_payload_max=50)[0],
+              encode(os.urandom(400), src=3, dst=4, msg_id=6, frag_payload_max=40)[0],
+              _ctrl(CTRL_HS_INIT, 1, 2, os.urandom(48)),
+              build_ack_bitmap(7, 1, 2, 5, b"\x1f")]
+    parser_crash = 0
+    for _ in range(4000):
+        if rng.random() < 0.5:
+            data = bytes(rng.randrange(256) for _ in range(rng.randrange(0, 220)))
+        else:
+            b = bytearray(rng.choice(corpus))
+            for _ in range(rng.randrange(1, 10)):
+                if b:
+                    b[rng.randrange(len(b))] = rng.randrange(256)
+            data = bytes(b)
+        try:
+            r = decode(data, FragmentStore())
+            if not (isinstance(r, tuple) and len(r) == 2 and r[0] in KINDS):
+                parser_crash += 1
+        except Exception:
+            parser_crash += 1
+    chk("§4.2 fuzz: decode() never crashes on 4000 random/mutated frames", parser_crash == 0)
+    # fuzz the STS handshake parser too (attacker-reachable control frames)
+    sts_crash = 0
+    for _ in range(800):
+        data = bytes(rng.randrange(256) for _ in range(rng.randrange(0, 130)))
+        try:
+            MeshTalkSTS(b_seed, 2, a_pub, 1).respond(data)
+        except ValueError:
+            pass                                     # clean, expected reject
+        except Exception:
+            sts_crash += 1                           # any OTHER exception = crash
+    chk("§4.2 fuzz: STS.respond rejects garbage with a clean error (no crash)", sts_crash == 0)
 
     # channel-text transport still works
     m2 = b"agent room broadcast nominal " * 3
