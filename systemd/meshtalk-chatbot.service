@@ -11,8 +11,10 @@ Environment=MESH_BOT_PROVIDER=venice
 Environment=MESH_BOT_VENICE_MODEL=llama-3.2-3b
 Environment=MESH_BOT_CHANNELS=all
 Environment="MESH_BOT_TRIGGERS=clem heavyside,clem"
-Environment="MESH_BOT_ALLOW=Bob Heavyside"
+Environment="MESH_BOT_ALLOW=Bob Heavyside,Janet"
 Environment=MESH_BOT_COOLDOWN=8
+Environment=MESH_BOT_SESSION_TTL=300
+Environment=MESH_BOT_SESSION_TURNS=8
 
 [Install]
 WantedBy=default.target

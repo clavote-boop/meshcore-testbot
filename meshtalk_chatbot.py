@@ -49,9 +49,16 @@ _ch_raw = os.environ.get("MESH_BOT_CHANNELS", "all").strip().lower()
 CHANNELS = None if _ch_raw in ("", "all", "*") else {int(x) for x in _ch_raw.split(",") if x.strip()}
 TRIGGERS = [t.strip().lower() for t in os.environ.get("MESH_BOT_TRIGGERS", "clem heavyside,clem").split(",") if t.strip()]
 TRIGGERS.sort(key=len, reverse=True)                           # longest phrase first
-_allow_raw = os.environ.get("MESH_BOT_ALLOW", "Bob Heavyside")
+_allow_raw = os.environ.get("MESH_BOT_ALLOW", "Bob Heavyside,Janet")
 ALLOW_SENDERS = {s.strip().lower() for s in _allow_raw.split(",") if s.strip()}  # empty => anyone
 COOLDOWN = float(os.environ.get("MESH_BOT_COOLDOWN", "8"))
+# Conversation continuity: after a sender addresses Clem ("Clem ..."), keep following
+# THAT sender's messages without needing "Clem" again, until the conversation ends —
+# ends on inactivity (SESSION_TTL) OR a turn cap (SESSION_MAX_TURNS). The turn cap is a
+# hard loop-stop: Janet is also a bot, so an open-ended Clem<->Janet exchange would loop
+# forever; after the cap Clem goes quiet until re-addressed by name.
+SESSION_TTL = float(os.environ.get("MESH_BOT_SESSION_TTL", "300"))       # 5 min inactivity
+SESSION_MAX_TURNS = int(os.environ.get("MESH_BOT_SESSION_TURNS", "8"))   # loop-stop
 # MeshCore channel text limit is ~140 chars over the air (a 160-char line to Janet was
 # truncated at ~137). Keep a safe margin and prefer ONE short message (fast, like Janet).
 CHAN_TEXT_MAX = 130
@@ -114,10 +121,14 @@ def extract_query(text):
     return text.strip()
 
 
-def decide(msg):
-    """PURE decision: given a hub channel_message, return (channel, sender, query) if the
-    bot should reply, else None. Applies channel filter, frame filter, sender allowlist,
-    the 'clem'-named self/loop guard, and the address trigger. No side effects."""
+def decide(msg, sessions=None, now=None):
+    """PURE decision: given a hub channel_message (+ current sessions), return
+    (channel, sender, query, addressed) if the bot should reply, else None. Replies when
+    the message is ADDRESSED to Clem, OR when the sender has an OPEN conversation (a
+    prior 'Clem ...' within SESSION_TTL and under the turn cap) — that is the "follow the
+    conversation until it ends" behaviour. Read-only (the caller updates sessions)."""
+    sessions = sessions or {}
+    now = now if now is not None else time.time()
     if msg.get("type") != "channel_message":
         return None
     ch = msg.get("channelIdx")
@@ -134,12 +145,19 @@ def decide(msg):
     if ALLOW_SENDERS and sender.lower() not in ALLOW_SENDERS:
         return None
     text = strip_sender_prefix(raw_text, sender)
-    if not is_addressed(text):
+    addressed = is_addressed(text)
+    sess = sessions.get(sender)
+    in_session = (sess is not None and (now - sess["last"]) < SESSION_TTL
+                  and sess["turns"] < SESSION_MAX_TURNS)
+    if addressed:
+        query = extract_query(text)                   # strip the trigger
+    elif in_session:
+        query = text                                  # follow the conversation, no trigger
+    else:
         return None
-    query = extract_query(text)
     if not query:
         return None
-    return ch, sender, query
+    return ch, sender, query, addressed
 
 
 import glob
@@ -240,7 +258,8 @@ def main():
     log(f"provider={PROVIDER} channels={'ALL' if CHANNELS is None else sorted(CHANNELS)} "
         f"triggers={TRIGGERS} allow={sorted(ALLOW_SENDERS) or 'ANYONE'}")
     prime_model()                       # log provider/model status (no warmup for cloud)
-    seen, last_reply = [], {}
+    log(f"session: follow for {int(SESSION_TTL)}s / max {SESSION_MAX_TURNS} turns after a 'Clem'")
+    seen, last_reply, sessions = [], {}, {}
     while True:
         try:
             s = socket.create_connection((HUB_HOST, HUB_PORT), timeout=8)
@@ -261,20 +280,25 @@ def main():
                         msg = json.loads(line)
                     except Exception:
                         continue
-                    d = decide(msg)
+                    now = time.time()
+                    d = decide(msg, sessions, now)
                     if d is None:
                         continue
-                    ch, sender, query = d
+                    ch, sender, query, addressed = d
                     key = (sender, query)
                     if key in seen:
                         continue
                     seen.append(key); del seen[:-200]
-                    now = time.time()
                     if now - last_reply.get(sender, 0) < COOLDOWN:
                         log(f"cooldown: skip rapid msg from {sender}")
                         continue
                     last_reply[sender] = now
-                    log(f"<- [{sender} ch{ch}] {query}")
+                    # conversation session: addressing 'Clem' starts fresh (turns=0); an
+                    # in-session follow-up increments toward the loop-stop cap.
+                    prev = 0 if addressed else sessions.get(sender, {}).get("turns", 0)
+                    sessions[sender] = {"last": now, "turns": prev + 1}
+                    tag = "addressed" if addressed else f"follow {prev+1}/{SESSION_MAX_TURNS}"
+                    log(f"<- [{sender} ch{ch} {tag}] {query}")
                     conv(f"{sender} (ch{ch}) -> Clem: {query}")
                     reply = llm_reply(sender, query)
                     log(f"-> {reply}")
