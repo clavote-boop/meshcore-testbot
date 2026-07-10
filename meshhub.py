@@ -48,9 +48,41 @@ async def send_to(writer, obj):
         pass
 
 
-async def broadcast(obj):
+async def broadcast(obj, exclude=None):
     for w in list(clients.keys()):
+        if exclude is not None and w is exclude:
+            continue
         await send_to(w, obj)
+
+
+async def relay_local(sender_writer, idx, text):
+    """Relay a locally-sent channel frame to the OTHER local clients.
+
+    The radio is half-duplex: it never hears its own transmission. So a frame one local
+    client sends reaches sibling clients on this node ONLY if the hub relays it. Relay the
+    RAW wire so each client can decode with ITS OWN session key -- the hub does not need to
+    hold that key. Decryption is attempted solely to enrich the monitor view, and only when
+    the hub happens to hold a matching key.
+    """
+    frame = ms.wire_to_frame(text)
+    if frame is None:                                  # plain channel text
+        await broadcast({"type": "channel_message", "channelIdx": idx,
+                         "senderName": "local", "text": text}, exclude=sender_writer)
+        return
+    src = frame[4] if len(frame) > 4 else "?"
+    shown = None
+    if MS_KEY and (frame[1] & ms.F_ENCRYPTED):
+        try:
+            k2, v2 = ms.decode(frame, tx_store, key=MS_KEY, session_salt=MS_SALT)
+            if k2 == "msg":
+                dv = v2.decode("utf-8", "replace") if isinstance(v2, (bytes, bytearray)) else str(v2)
+                shown = dv + "  [decrypted MS -- sent]"
+        except Exception:
+            pass
+    await broadcast({"type": "channel_message", "channelIdx": idx,
+                     "senderName": f"agent{src}",
+                     "text": shown if shown is not None else text,
+                     "ms": True, "raw": text}, exclude=sender_writer)
 
 
 def parse_sender(text):
@@ -219,20 +251,17 @@ async def handle_client(reader, writer):
                 elif act == "send_channel":
                     idx = msg.get("channelIdx")
                     text = msg.get("text", "")
-                    if mc is not None and idx is not None and text:
+                    if mc is None:
+                        log(f"send REFUSED CH{idx}: radio not connected")
+                        await send_to(writer, {"type": "send_error", "channelIdx": idx,
+                                               "error": "radio not connected"})
+                    elif idx is not None and text:
                         try:
                             await mc.commands.send_chan_msg(int(idx), str(text))
                             log(f"sent CH{idx}: {str(text)[:50]}")
-                            _fr = ms.wire_to_frame(str(text))
-                            if _fr is not None and MS_KEY and (_fr[1] & ms.F_ENCRYPTED):
-                                _k2, _v2 = ms.decode(_fr, tx_store, key=MS_KEY, session_salt=MS_SALT)
-                                if _k2 == "msg":
-                                    _t = _v2.decode("utf-8", "replace") if isinstance(_v2, (bytes, bytearray)) else str(_v2)
-                                    await broadcast({"type": "channel_message", "channelIdx": idx,
-                                                     "senderName": f"agent{_fr[4]}",
-                                                     "text": _t + "  [decrypted MS -- sent]", "ms": True, "raw": str(text)})
                         except Exception as e:
                             log(f"send error: {e}")
+                        await relay_local(writer, idx, str(text))
     except Exception:
         pass
     finally:
