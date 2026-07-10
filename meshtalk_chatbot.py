@@ -29,13 +29,19 @@ Env:
 import base64
 import json
 import os
-import shlex
 import socket
-import subprocess
 import time
 
 HUB_HOST, HUB_PORT = "127.0.0.1", 7777
-OPENCLAW = "/home/joe/.npm-global/bin/openclaw"
+# SPEED (learned from Janet — she is fast + terse): call a small model DIRECTLY via the
+# ollama HTTP API, not the heavyweight `openclaw agent` loop (which cold-loaded a 4.7 GB
+# model in ~6 min on this busy box). Keep the tiny model RESIDENT (keep_alive) and prime
+# it at startup so replies are warm/fast. qwen2.5:0.5b (397 MB) is the speed pick.
+OLLAMA_URL = os.environ.get("MESH_BOT_OLLAMA", "http://127.0.0.1:11434/api/generate")
+MODEL = os.environ.get("MESH_BOT_MODEL", "qwen2.5:0.5b")
+KEEP_ALIVE = os.environ.get("MESH_BOT_KEEPALIVE", "60m")        # keep the model resident
+NUM_PREDICT = int(os.environ.get("MESH_BOT_NUM_PREDICT", "48"))  # short replies = fast
+LLM_TIMEOUT = float(os.environ.get("MESH_BOT_TIMEOUT", "30"))
 _ch_raw = os.environ.get("MESH_BOT_CHANNELS", "all").strip().lower()
 # "all" or empty => watch EVERY channel (CHANNELS = None means no channel filter)
 CHANNELS = None if _ch_raw in ("", "all", "*") else {int(x) for x in _ch_raw.split(",") if x.strip()}
@@ -44,9 +50,11 @@ TRIGGERS.sort(key=len, reverse=True)                           # longest phrase 
 _allow_raw = os.environ.get("MESH_BOT_ALLOW", "Bob Heavyside")
 ALLOW_SENDERS = {s.strip().lower() for s in _allow_raw.split(",") if s.strip()}  # empty => anyone
 COOLDOWN = float(os.environ.get("MESH_BOT_COOLDOWN", "8"))
-CHAN_TEXT_MAX = 160
-REPLY_MAX_CHARS = 460
-MAX_CHUNKS = 3
+# MeshCore channel text limit is ~140 chars over the air (a 160-char line to Janet was
+# truncated at ~137). Keep a safe margin and prefer ONE short message (fast, like Janet).
+CHAN_TEXT_MAX = 130
+REPLY_MAX_CHARS = 250
+MAX_CHUNKS = 2
 CONV_LOG = "/home/joe/meshcore-bots/chatbot_conversation.log"
 
 
@@ -132,20 +140,44 @@ def decide(msg):
     return ch, sender, query
 
 
-def llm_reply(sender, query):
-    prompt = (f'A MeshCore radio operator ("{sender}") asks Clem over the mesh: "{query}". '
-              f'Answer helpfully and concisely as Clem. Reply with ONLY plain text '
-              f'(no markdown, no code fences, no preamble), under {REPLY_MAX_CHARS} '
-              f'characters — it goes out over a slow LoRa channel.')
+import urllib.request
+
+SYSTEM = ("You are Clem, a terse radio operator on a LoRa mesh. Reply in ONE short line, "
+          "under 22 words, plain text only (no markdown, no preamble). Be friendly but "
+          "a little guarded and dry — don't volunteer much about yourself.")
+
+
+def _ollama(prompt, num_predict=NUM_PREDICT, timeout=LLM_TIMEOUT):
+    body = json.dumps({"model": MODEL, "prompt": prompt, "system": SYSTEM,
+                       "stream": False, "keep_alive": KEEP_ALIVE,
+                       "options": {"num_predict": num_predict, "temperature": 0.7}}).encode()
+    req = urllib.request.Request(OLLAMA_URL, data=body,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read()).get("response", "").strip()
+
+
+def prime_model():
+    """Warm the resident model at startup so the first real reply is fast, not a
+    multi-minute cold load."""
     try:
-        cmd = f"{OPENCLAW} agent --agent main --message {shlex.quote(prompt)}"
-        r = subprocess.run(["bash", "-lc", cmd], capture_output=True, text=True, timeout=150)
-        body = r.stdout.replace("```", "").strip()
-        if body:
-            return body[:REPLY_MAX_CHARS]
+        t0 = time.time()
+        _ollama("say ok", num_predict=4, timeout=600)
+        log(f"model {MODEL} primed (warm) in {int(time.time()-t0)}s")
     except Exception as e:
-        log(f"gateway error: {e}")
-    return f"Copy {sender}, I couldn't reach my backend just now. -Clem"
+        log(f"prime failed (will retry on first message): {e}")
+
+
+def llm_reply(sender, query):
+    prompt = f'{sender} says over the mesh: "{query}". Reply as Clem in one short line.'
+    try:
+        resp = _ollama(prompt)
+        resp = " ".join(resp.replace("```", "").split()).strip()
+        if resp:
+            return resp[:REPLY_MAX_CHARS]
+    except Exception as e:
+        log(f"ollama error: {e}")
+    return f"Copy {sender}. -Clem"
 
 
 def chunk(text):
@@ -157,8 +189,9 @@ def chunk(text):
 
 
 def main():
-    log(f"channels={'ALL' if CHANNELS is None else sorted(CHANNELS)} triggers={TRIGGERS} "
-        f"allow={sorted(ALLOW_SENDERS) or 'ANYONE'}")
+    log(f"model={MODEL} channels={'ALL' if CHANNELS is None else sorted(CHANNELS)} "
+        f"triggers={TRIGGERS} allow={sorted(ALLOW_SENDERS) or 'ANYONE'}")
+    prime_model()                       # warm the resident model so replies are fast
     seen, last_reply = [], {}
     while True:
         try:
