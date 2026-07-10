@@ -36,7 +36,9 @@ import time
 
 HUB_HOST, HUB_PORT = "127.0.0.1", 7777
 OPENCLAW = "/home/joe/.npm-global/bin/openclaw"
-CHANNELS = {int(x) for x in os.environ.get("MESH_BOT_CHANNELS", "0,4").split(",") if x.strip() != ""}
+_ch_raw = os.environ.get("MESH_BOT_CHANNELS", "all").strip().lower()
+# "all" or empty => watch EVERY channel (CHANNELS = None means no channel filter)
+CHANNELS = None if _ch_raw in ("", "all", "*") else {int(x) for x in _ch_raw.split(",") if x.strip()}
 TRIGGERS = [t.strip().lower() for t in os.environ.get("MESH_BOT_TRIGGERS", "clem heavyside,clem").split(",") if t.strip()]
 TRIGGERS.sort(key=len, reverse=True)                           # longest phrase first
 _allow_raw = os.environ.get("MESH_BOT_ALLOW", "Bob Heavyside")
@@ -82,19 +84,23 @@ def looks_like_frame(text):
     return bool(raw) and raw[0] in (0xA1, 0xF8)
 
 
-def matched_trigger(text):
+def is_addressed(text):
+    """Bob addresses Clem naturally — 'Clem ...', 'Hey Clem', 'Clem Heavyside, ...' — so
+    match the trigger ANYWHERE in the message, not just at the start."""
     low = text.lower()
-    for trig in TRIGGERS:
+    return any(trig in low for trig in TRIGGERS)
+
+
+def extract_query(text):
+    """The query passed to the LLM. If the message starts with a trigger phrase, strip
+    it ('Clem, what time?' -> 'what time?'); otherwise pass the whole message (the LLM IS
+    Clem and understands 'Hey Clem ...'). Bare 'Clem' -> the full text so Clem greets."""
+    low = text.lower()
+    for trig in TRIGGERS:                       # longest phrase first
         if low.startswith(trig) or low.startswith("@" + trig):
-            return trig
-    return None
-
-
-def strip_trigger(text, trig):
-    low = text.lower()
-    for pre in ("@" + trig, trig):
-        if low.startswith(pre):
-            return text[len(pre):].lstrip(" ,:").strip()
+            q = text[len(trig) + (1 if low.startswith("@" + trig) else 0):]
+            q = q.lstrip(" ,:?!.").strip()
+            return q if q else text.strip()
     return text.strip()
 
 
@@ -105,7 +111,7 @@ def decide(msg):
     if msg.get("type") != "channel_message":
         return None
     ch = msg.get("channelIdx")
-    if ch not in CHANNELS:
+    if CHANNELS is not None and ch not in CHANNELS:   # CHANNELS None => watch all
         return None
     sender = (msg.get("senderName") or msg.get("sender") or "").strip()
     raw_text = msg.get("text", "") or ""
@@ -118,10 +124,9 @@ def decide(msg):
     if ALLOW_SENDERS and sender.lower() not in ALLOW_SENDERS:
         return None
     text = strip_sender_prefix(raw_text, sender)
-    trig = matched_trigger(text)
-    if not trig:
+    if not is_addressed(text):
         return None
-    query = strip_trigger(text, trig)
+    query = extract_query(text)
     if not query:
         return None
     return ch, sender, query
@@ -152,7 +157,7 @@ def chunk(text):
 
 
 def main():
-    log(f"channels={sorted(CHANNELS)} triggers={TRIGGERS} "
+    log(f"channels={'ALL' if CHANNELS is None else sorted(CHANNELS)} triggers={TRIGGERS} "
         f"allow={sorted(ALLOW_SENDERS) or 'ANYONE'}")
     seen, last_reply = [], {}
     while True:
