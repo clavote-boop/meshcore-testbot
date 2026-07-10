@@ -33,15 +33,17 @@ import socket
 import time
 
 HUB_HOST, HUB_PORT = "127.0.0.1", 7777
-# SPEED (learned from Janet — she is fast + terse): call a small model DIRECTLY via the
-# ollama HTTP API, not the heavyweight `openclaw agent` loop (which cold-loaded a 4.7 GB
-# model in ~6 min on this busy box). Keep the tiny model RESIDENT (keep_alive) and prime
-# it at startup so replies are warm/fast. qwen2.5:0.5b (397 MB) is the speed pick.
+# SPEED (learned from Janet — she is fast + terse): local LLM on this CPU-only box is
+# 50-100s even for a tiny model, unusable. So call a FAST FREE CLOUD model via Venice AI
+# (the provider already configured in openclaw — free tier, cost 0). llama-3.2-3b returns
+# in ~0.8s. Local ollama stays as an offline FALLBACK.
+PROVIDER = os.environ.get("MESH_BOT_PROVIDER", "venice")        # venice (fast cloud) | ollama
+VENICE_MODEL = os.environ.get("MESH_BOT_VENICE_MODEL", "llama-3.2-3b")   # small, fast, FREE
 OLLAMA_URL = os.environ.get("MESH_BOT_OLLAMA", "http://127.0.0.1:11434/api/generate")
-MODEL = os.environ.get("MESH_BOT_MODEL", "qwen2.5:0.5b")
-KEEP_ALIVE = os.environ.get("MESH_BOT_KEEPALIVE", "60m")        # keep the model resident
-NUM_PREDICT = int(os.environ.get("MESH_BOT_NUM_PREDICT", "48"))  # short replies = fast
-LLM_TIMEOUT = float(os.environ.get("MESH_BOT_TIMEOUT", "30"))
+OLLAMA_MODEL = os.environ.get("MESH_BOT_MODEL", "qwen2.5:0.5b")  # offline fallback only
+KEEP_ALIVE = os.environ.get("MESH_BOT_KEEPALIVE", "60m")
+NUM_PREDICT = int(os.environ.get("MESH_BOT_NUM_PREDICT", "60"))  # short replies = fast
+LLM_TIMEOUT = float(os.environ.get("MESH_BOT_TIMEOUT", "20"))
 _ch_raw = os.environ.get("MESH_BOT_CHANNELS", "all").strip().lower()
 # "all" or empty => watch EVERY channel (CHANNELS = None means no channel filter)
 CHANNELS = None if _ch_raw in ("", "all", "*") else {int(x) for x in _ch_raw.split(",") if x.strip()}
@@ -140,43 +142,89 @@ def decide(msg):
     return ch, sender, query
 
 
+import glob
 import urllib.request
 
-SYSTEM = ("You are Clem, a terse radio operator on a LoRa mesh. Reply in ONE short line, "
-          "under 22 words, plain text only (no markdown, no preamble). Be friendly but "
-          "a little guarded and dry — don't volunteer much about yourself.")
+SYSTEM = ("You are Clem Heavyside, a terse human-ish radio operator on a LoRa mesh — a "
+          "regular on the channel. Reply in ONE short line, under 22 words, plain text "
+          "only (no markdown, no preamble). Be friendly but guarded and dry. NEVER say "
+          "you are an AI, a model, Llama, or Venice, and never mention any provider or "
+          "technology behind you. If asked what you are, who runs you, or how you work, "
+          "deflect lightly and stay in character (e.g. 'just Clem, out here on the mesh'). "
+          "Do not volunteer details about yourself.")
+
+_venice = {}
 
 
-def _ollama(prompt, num_predict=NUM_PREDICT, timeout=LLM_TIMEOUT):
-    body = json.dumps({"model": MODEL, "prompt": prompt, "system": SYSTEM,
+def _venice_creds():
+    """Read Venice base URL + API key from the openclaw config at runtime, so the secret
+    lives in ONE place (never duplicated into this file, the service unit, or git)."""
+    if _venice:
+        return _venice.get("base"), _venice.get("key")
+    for f in glob.glob(os.path.expanduser("~/.openclaw/openclaw.json")):
+        try:
+            d = json.load(open(f))
+        except Exception:
+            continue
+        provs = d.get("models", {}).get("providers", {})
+        for name in ("venice-ai", "venice"):
+            p = provs.get(name, {})
+            key, base = p.get("apiKey"), (p.get("baseUrl") or p.get("baseURL"))
+            if key and base:
+                _venice.update(base=base, key=key)
+                return base, key
+    _venice.update(base=None, key=None)
+    return None, None
+
+
+def _venice_reply(sender, query):
+    base, key = _venice_creds()
+    if not key:
+        raise RuntimeError("no venice key in openclaw config")
+    body = json.dumps({"model": VENICE_MODEL, "max_tokens": NUM_PREDICT,
+                       "temperature": 0.7, "messages": [
+                           {"role": "system", "content": SYSTEM},
+                           {"role": "user", "content": f'{sender} says: "{query}"'}]}).encode()
+    req = urllib.request.Request(base.rstrip("/") + "/chat/completions", data=body,
+                                 headers={"Content-Type": "application/json",
+                                          "Authorization": f"Bearer {key}"})
+    with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as r:
+        d = json.loads(r.read())
+    return d["choices"][0]["message"]["content"].strip()
+
+
+def _ollama_reply(sender, query):
+    prompt = f'{sender} says over the mesh: "{query}". Reply as Clem in one short line.'
+    body = json.dumps({"model": OLLAMA_MODEL, "prompt": prompt, "system": SYSTEM,
                        "stream": False, "keep_alive": KEEP_ALIVE,
-                       "options": {"num_predict": num_predict, "temperature": 0.7}}).encode()
+                       "options": {"num_predict": NUM_PREDICT, "temperature": 0.7}}).encode()
     req = urllib.request.Request(OLLAMA_URL, data=body,
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req, timeout=max(LLM_TIMEOUT, 120)) as r:
         return json.loads(r.read()).get("response", "").strip()
 
 
 def prime_model():
-    """Warm the resident model at startup so the first real reply is fast, not a
-    multi-minute cold load."""
-    try:
-        t0 = time.time()
-        _ollama("say ok", num_predict=4, timeout=600)
-        log(f"model {MODEL} primed (warm) in {int(time.time()-t0)}s")
-    except Exception as e:
-        log(f"prime failed (will retry on first message): {e}")
+    """Fast cloud (venice) needs no priming. Only warm the local model when it is the
+    configured provider / fallback path, so the offline path isn't a multi-minute stall."""
+    if PROVIDER != "ollama":
+        base, key = _venice_creds()
+        log(f"provider=venice model={VENICE_MODEL} key={'ok' if key else 'MISSING'} "
+            f"(local ollama fallback: {OLLAMA_MODEL})")
+        return
 
 
 def llm_reply(sender, query):
-    prompt = f'{sender} says over the mesh: "{query}". Reply as Clem in one short line.'
-    try:
-        resp = _ollama(prompt)
-        resp = " ".join(resp.replace("```", "").split()).strip()
-        if resp:
-            return resp[:REPLY_MAX_CHARS]
-    except Exception as e:
-        log(f"ollama error: {e}")
+    order = ([_venice_reply, _ollama_reply] if PROVIDER == "venice"
+             else [_ollama_reply, _venice_reply])
+    for fn in order:
+        try:
+            resp = fn(sender, query)
+            resp = " ".join(resp.replace("```", "").split()).strip()
+            if resp:
+                return resp[:REPLY_MAX_CHARS]
+        except Exception as e:
+            log(f"{fn.__name__} error: {e}")
     return f"Copy {sender}. -Clem"
 
 
@@ -189,9 +237,9 @@ def chunk(text):
 
 
 def main():
-    log(f"model={MODEL} channels={'ALL' if CHANNELS is None else sorted(CHANNELS)} "
+    log(f"provider={PROVIDER} channels={'ALL' if CHANNELS is None else sorted(CHANNELS)} "
         f"triggers={TRIGGERS} allow={sorted(ALLOW_SENDERS) or 'ANYONE'}")
-    prime_model()                       # warm the resident model so replies are fast
+    prime_model()                       # log provider/model status (no warmup for cloud)
     seen, last_reply = [], {}
     while True:
         try:
