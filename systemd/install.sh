@@ -4,12 +4,12 @@
 set -e
 DEST=~/.config/systemd/user
 mkdir -p "$DEST"
-cp "$(dirname "$0")/meshtalk-chatbot.service" "$DEST/meshtalk-chatbot.service"
+cp "$(dirname "$0")/meshspeak-chatbot.service" "$DEST/meshspeak-chatbot.service"
 # services start at boot without an interactive login:
 loginctl enable-linger "$USER" 2>/dev/null || true
 systemctl --user daemon-reload
-systemctl --user enable --now meshtalk-chatbot.service
+systemctl --user enable --now meshspeak-chatbot.service
 echo "installed + enabled. status:"
-systemctl --user is-active  meshtalk-chatbot.service
-systemctl --user is-enabled meshtalk-chatbot.service
+systemctl --user is-active  meshspeak-chatbot.service
+systemctl --user is-enabled meshspeak-chatbot.service
 echo "Linger: $(loginctl show-user "$USER" --property=Linger)"

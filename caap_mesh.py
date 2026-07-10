@@ -7,25 +7,25 @@ Copyright (c) 2026 Jose C. Guzman / Clavote Research. All Rights Reserved.
 Moves a CAAP artifact (a Profile-AUTH message or a MILCAAP CRF-M frame) across the
 LoRa mesh using the SAME path the live stack uses:
 
-    CAAP bytes -> meshtalk.encode() fragments -> frame_to_wire (base64)
+    CAAP bytes -> meshspeak.encode() fragments -> frame_to_wire (base64)
               -> mesh-hub TCP 127.0.0.1:7777 {action:send_channel,channelIdx,text}
               -> radio -> ... -> radio -> hub channel_message {raw|text}
-              -> wire_to_frame -> meshtalk.decode()/reassemble -> CAAP bytes
+              -> wire_to_frame -> meshspeak.decode()/reassemble -> CAAP bytes
 
 The hub owns the serial radio (see meshhub.py / mesh-hub.js); this bridge is a hub
 CLIENT, so it needs no radio access of its own and is safe to run anywhere on the box.
 
 AUTH rides UNENCRYPTED (Part 97.113: base64 is framing, not obfuscation — legal on
-amateur spectrum). CRF-M is a 109 B MAC frame that fits ONE MeshTalk fragment (the
+amateur spectrum). CRF-M is a 109 B MAC frame that fits ONE MeshSpeak fragment (the
 MILCAAP <=2-packet property). Neither is encrypted at the mesh layer — confidentiality,
 when required, is the CAAP capsule's job (Profile A/M) and stays off amateur bands.
 
 A full CAAP (Profile A) capsule is ~13 KB / ~80+ fragments — too many to survive
 fire-and-forget on a lossy half-duplex channel. `send-capsule`/`recv-capsule` add
-selective-repeat ARQ over MeshTalk's ACK-bitmap primitives so the WHOLE capsule lands:
+selective-repeat ARQ over MeshSpeak's ACK-bitmap primitives so the WHOLE capsule lands:
 the sender bursts every fragment, the receiver replies with a bitmap of what it holds,
 and the sender resends ONLY the gaps until the receiver ACKs complete. This is how CAAP
-confidentiality stays a real capability on the MeshSpeak/MeshTalk mesh.
+confidentiality stays a real capability on the MeshSpeak/MeshSpeak mesh.
 
 CLI:
   caap_mesh.py send         --channel IDX --src N --dst N --file BLOB   # best-effort TX
@@ -42,7 +42,7 @@ import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import meshtalk as ms
+import meshspeak as ms
 
 HUB_HOST = os.environ.get("CAAP_MESH_HUB_HOST", "127.0.0.1")
 HUB_PORT = int(os.environ.get("CAAP_MESH_HUB_PORT", "7777"))
@@ -112,9 +112,9 @@ def send_blob(blob, channel_idx, src, dst, msg_id=None, key=None, session_salt=N
 
 
 # --------------------------------------------------------- reliable capsule ARQ
-# A full CAAP (Profile A) capsule is ~13 KB / ~80+ MeshTalk fragments. Fire-and-forget on
+# A full CAAP (Profile A) capsule is ~13 KB / ~80+ MeshSpeak fragments. Fire-and-forget on
 # a lossy, half-duplex LoRa channel loses most of them — no retransmit means a single
-# dropped fragment kills the whole reassembly. This wires MeshTalk's ACK-bitmap primitives
+# dropped fragment kills the whole reassembly. This wires MeshSpeak's ACK-bitmap primitives
 # (build_ack_bitmap / missing_fragments, ARQ_MAX_ROUNDS) into SELECTIVE-REPEAT ARQ so the
 # WHOLE capsule arrives: the sender bursts every fragment, the receiver answers with a
 # bitmap of what it holds, and the sender resends ONLY the gaps — round after round —
@@ -125,7 +125,7 @@ ACK_INTERVAL_S = float(os.environ.get("CAAP_MESH_ACK_INTERVAL", "1.5"))  # recei
 
 
 def _read_frame(hub_msg):
-    """Pull a MeshTalk frame out of a hub channel_message (raw wire first, text fallback)."""
+    """Pull a MeshSpeak frame out of a hub channel_message (raw wire first, text fallback)."""
     if hub_msg.get("type") != "channel_message":
         return None
     raw = hub_msg.get("raw") or ""
@@ -325,7 +325,7 @@ class Reassembler:
 def cmd_send(a):
     blob = open(a.file, "rb").read()
     n = send_blob(blob, a.channel, a.src, a.dst)
-    print(f"sent {len(blob)} B as {n} MeshTalk frame(s) on channel {a.channel} "
+    print(f"sent {len(blob)} B as {n} MeshSpeak frame(s) on channel {a.channel} "
           f"(src {a.src} -> dst {a.dst})")
 
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# meshspeak_responder.py - Clem's live MeshTalk responder.
-# Listens on the hub (TCP 7777). For each MeshTalk frame addressed to Clem (dst=10) it can
+# meshspeak_responder.py - Clem's live MeshSpeak responder.
+# Listens on the hub (TCP 7777). For each MeshSpeak frame addressed to Clem (dst=10) it can
 # decrypt with the session key, it asks Clem (OpenClaw gateway) to fulfill the request (it may run
 # searches/commands), encrypts the reply (Clem->sender, direction flips -> nonce-safe), auto-
 # fragments long replies into multiple channel chunks, and writes a readable conversation log.
 import sys, os, json, socket, time, subprocess, threading, shlex
 sys.path.insert(0, "/home/joe/meshcore-bots")
-import meshtalk as ms
+import meshspeak as ms
 from binascii import unhexlify
 
 HUB_HOST, HUB_PORT = "127.0.0.1", 7777
@@ -35,7 +35,7 @@ def conv(line):
 
 
 def clem_reply(src_agent, text):
-    prompt = (f'Incoming MeshTalk request from agent {src_agent}: "{text}". '
+    prompt = (f'Incoming MeshSpeak request from agent {src_agent}: "{text}". '
               f'Fulfill it now -- you may run shell commands or search the system to answer. '
               f'Reply with ONLY the result as plain text (no markdown, no code fences, no preamble), '
               f'under 480 characters.')
@@ -61,7 +61,7 @@ def handle(sock, msg):
     idx = msg.get("channelIdx", -1)
     text = msg.get("text", "") or ""
     raw = msg.get("raw") or ""
-    frame = ms.wire_to_frame(raw)                 # hub provides the decoded wire for MeshTalk frames
+    frame = ms.wire_to_frame(raw)                 # hub provides the decoded wire for MeshSpeak frames
     if frame is None:
         for cand in [text] + text.split():        # fallback for unencrypted frames carried in text
             frame = ms.wire_to_frame(cand)
@@ -101,7 +101,7 @@ def main():
         try:
             sock = socket.create_connection((HUB_HOST, HUB_PORT))
             sock.sendall((json.dumps({"action": "register", "name": NAME}) + "\n").encode())
-            log("connected to hub; listening for MeshTalk addressed to Clem (agent 10)")
+            log("connected to hub; listening for MeshSpeak addressed to Clem (agent 10)")
             buf = ""
             while True:
                 data = sock.recv(4096)

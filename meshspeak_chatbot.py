@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-meshtalk_chatbot.py — plaintext LLM channel bot for the MeshCore mesh.
+meshspeak_chatbot.py — plaintext LLM channel bot for the MeshCore mesh.
 
 Copyright (c) 2026 Jose C. Guzman / Clavote Research. All Rights Reserved.
 
@@ -15,7 +15,7 @@ NOT touch that; both run side by side.
 
 Guardrails (essential on the OPEN Public channel): a SENDER ALLOWLIST (default: only
 "Bob Heavyside") so Clem never engages strangers or other bots; trigger-gated so it stays
-silent otherwise; ignores its own / any "clem"-named sender; ignores MeshTalk/HF base64
+silent otherwise; ignores its own / any "clem"-named sender; ignores MeshSpeak/HF base64
 frames; dedupes recent (sender,text); per-sender cooldown.
 
 Env:
@@ -90,7 +90,7 @@ def strip_sender_prefix(text, sender):
 
 
 def looks_like_frame(text):
-    """A base64 MeshTalk/HF wire fragment, not human chat — leave to other layers."""
+    """A base64 MeshSpeak/HF wire fragment, not human chat — leave to other layers."""
     t = text.strip()
     if len(t) < 8:
         return False

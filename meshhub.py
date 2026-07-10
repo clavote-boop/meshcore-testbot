@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # meshhub.py - Python MeshCore hub (firmware-current; drop-in for mesh-hub.js)
 # Connects to the radio via the meshcore PYTHON lib (companion protocol v10), speaks the SAME
-# TCP 7777 JSON protocol the bots + control-dashboard use, and integrates MeshTalk (MT):
-# detects/decrypts MeshTalk frames for the control view, drains radio memory on every connect.
+# TCP 7777 JSON protocol the bots + control-dashboard use, and integrates MeshSpeak (MT):
+# detects/decrypts MeshSpeak frames for the control view, drains radio memory on every connect.
 #
 #   client -> hub : {"action":"register","name":...}
 #                   {"action":"send_channel","channelIdx":N,"text":...}
@@ -12,7 +12,7 @@
 #                   {"type":"hub_connected"} / {"type":"hub_disconnected"}
 import asyncio, json, os, time, signal
 from meshcore import MeshCore, EventType
-import meshtalk as ms
+import meshspeak as ms
 
 PORT = int(os.environ.get("HUB_PORT", "7777"))
 SERIAL = os.environ.get("SERIAL_PORT", "/dev/ttyUSB0")
@@ -27,7 +27,7 @@ connected = False
 ms_store = ms.FragmentStore()
 tx_store = ms.FragmentStore()
 
-# Control view holds the session key so it can DECRYPT MeshTalk for display (Joe's monitor).
+# Control view holds the session key so it can DECRYPT MeshSpeak for display (Joe's monitor).
 try:
     import binascii as _ba
     _k, _s, _w = open("/home/joe/clem_demo_session.txt").read().split()
@@ -71,33 +71,33 @@ async def on_channel(event):
         frame = ms.wire_to_frame(_cand)
         if frame is not None:
             break
-    if frame is not None:                       # MeshTalk frame (AI-agent room)
+    if frame is not None:                       # MeshSpeak frame (AI-agent room)
         ms_store.evict_stale()
         if frame[1] & ms.F_ENCRYPTED:
             dk, dv = ms.decode(frame, ms_store, key=MS_KEY, session_salt=MS_SALT) if MS_KEY else ("drop", None)
             if dk == "partial":
-                log(f"CH{idx} MeshTalk fragment <{sender}>")
+                log(f"CH{idx} MeshSpeak fragment <{sender}>")
                 return
             if dk == "msg":
                 shown = (dv.decode("utf-8", "replace") if isinstance(dv, (bytes, bytearray)) else str(dv)) + "  [decrypted MS]"
             elif dk == "crypto":
                 shown = f"[decrypted MS crypto-tx chain=0x{dv['chain']:02x} txop=0x{dv['txop']:02x}]"
             else:
-                shown = ms.frame_to_wire(frame) + "  (encrypted MeshTalk frame -- no/invalid key)"
+                shown = ms.frame_to_wire(frame) + "  (encrypted MeshSpeak frame -- no/invalid key)"
         else:
             kind, val = ms.decode(frame, ms_store)
             if kind == "partial":
-                log(f"CH{idx} MeshTalk fragment <{sender}>")
+                log(f"CH{idx} MeshSpeak fragment <{sender}>")
                 return
             if kind == "crypto":
-                shown = f"[MeshTalk crypto-tx chain=0x{val['chain']:02x} txop=0x{val['txop']:02x}]"
+                shown = f"[MeshSpeak crypto-tx chain=0x{val['chain']:02x} txop=0x{val['txop']:02x}]"
             elif kind == "msg":
                 v = val
                 shown = v.decode("utf-8", "replace") if isinstance(v, (bytes, bytearray)) else str(v)
             else:
-                log(f"CH{idx} MeshTalk drop: {val}")
+                log(f"CH{idx} MeshSpeak drop: {val}")
                 return
-        log(f"CH{idx} [MeshTalk] <{sender}>: {shown[:60]}")
+        log(f"CH{idx} [MeshSpeak] <{sender}>: {shown[:60]}")
         await broadcast({"type": "channel_message", "channelIdx": idx,
                          "senderName": str(sender), "text": shown, "ms": True, "raw": ms.frame_to_wire(frame)})
         return

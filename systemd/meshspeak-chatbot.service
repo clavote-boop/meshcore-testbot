@@ -4,7 +4,7 @@ After=meshhub.service
 Wants=meshhub.service
 
 [Service]
-ExecStart=/usr/bin/python3 /home/joe/meshcore-bots/meshtalk_chatbot.py
+ExecStart=/usr/bin/python3 /home/joe/meshcore-bots/meshspeak_chatbot.py
 Restart=always
 RestartSec=5
 Environment=MESH_BOT_PROVIDER=venice
