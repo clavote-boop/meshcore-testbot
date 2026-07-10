@@ -14,7 +14,7 @@ Environment="MESH_BOT_TRIGGERS=clem heavyside,clem"
 Environment="MESH_BOT_ALLOW=Bob Heavyside,Janet"
 Environment=MESH_BOT_COOLDOWN=8
 Environment=MESH_BOT_SESSION_TTL=300
-Environment=MESH_BOT_SESSION_TURNS=8
+Environment=MESH_BOT_SESSION_TURNS=4
 
 [Install]
 WantedBy=default.target

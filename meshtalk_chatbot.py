@@ -58,7 +58,7 @@ COOLDOWN = float(os.environ.get("MESH_BOT_COOLDOWN", "8"))
 # hard loop-stop: Janet is also a bot, so an open-ended Clem<->Janet exchange would loop
 # forever; after the cap Clem goes quiet until re-addressed by name.
 SESSION_TTL = float(os.environ.get("MESH_BOT_SESSION_TTL", "300"))       # 5 min inactivity
-SESSION_MAX_TURNS = int(os.environ.get("MESH_BOT_SESSION_TURNS", "8"))   # loop-stop
+SESSION_MAX_TURNS = int(os.environ.get("MESH_BOT_SESSION_TURNS", "4"))   # loop-stop
 # MeshCore channel text limit is ~140 chars over the air (a 160-char line to Janet was
 # truncated at ~137). Keep a safe margin and prefer ONE short message (fast, like Janet).
 CHAN_TEXT_MAX = 130
