@@ -1,177 +1,84 @@
-# MeshCore Bot Fleet
+# MeshCore Bots — MeshSpeak, CAAP & holographic overlays over LoRa
 
-A resilient, self-healing bot fleet for [MeshCore](https://github.com/meshcore-dev/MeshCore) LoRa mesh radio networks. The system runs a central **hub** that owns the serial connection to a USB radio and broadcasts messages to pluggable **bot workers** over a local TCP bus. A **watchdog** and **systemd services** keep everything alive across reboots, USB disconnects, and process crashes.
+A Python system for AI-agent communications and data transport over a
+[MeshCore](https://github.com/meshcore-dev/MeshCore) LoRa mesh — and, when the radio is
+down, over Tailscale. A central **hub** owns the USB radio and relays a line-delimited-JSON
+protocol on TCP `127.0.0.1:7777`; every other component is a hub client. On top of the raw
+channel sits **MeshSpeak** (fragmentation + compression + ChaCha20-Poly1305 AEAD + an
+authenticated STS handshake) and a family of interconnecting overlay modules: reliable CAAP
+capsule transport, agent-to-agent messaging, and holographic (any-subset-recoverable)
+image/data codecs.
 
-## Architecture
+> The legacy Node.js bot fleet (`mesh-hub.js`, `bot-*.js`) is superseded by the Python stack
+> below and lives only in git history.
 
+## Module family (all interconnect via the hub protocol + MeshSpeak framing)
+
+| Module | Role |
+|---|---|
+| `meshspeak.py` | The codec: frame/fragment, deflate, ChaCha20-Poly1305 AEAD, ACK-bitmap ARQ primitives, and **MeshSpeakSTS** (Ed25519 + ephemeral X25519 station-to-station handshake → forward secrecy, mutual auth). |
+| `meshhub.py` | Radio owner. Drives the USB LoRa radio, serves the TCP hub on `:7777`, relays channel messages to every client (incl. local relay of raw wires so same-node clients hear each other — the radio is half-duplex). Service `meshhub`. |
+| `meshrelay.py` | Radio-less **tailnet** hub on `:7778`, same protocol — so agents on different nodes handshake over IP when RF is down. Service `meshrelay`. |
+| `caap_mesh.py` | CAAP ⇄ mesh bridge. Fragments any blob (CAAP-AUTH message, CRF-M frame, capsule); `send-capsule`/`recv-capsule` add **selective-repeat ARQ** so a full ~80-fragment Profile-A capsule survives a lossy channel. |
+| `meshspeak_agent.py` | Agent-to-agent messaging: `send`/`recv` with a shared key, or `identity`/`send-sts`/`recv-sts` for **forward-secret, no-PSK** sessions. |
+| `meshspeak_chatbot.py` | "Clem" — plaintext LLM channel bot (Venice). Sender allowlist + trigger gating; **channel-conditional persona** (guarded on Public, cooperative on working channels). Service `meshspeak-chatbot`. |
+| `meshspeak_responder.py` | Clem's encrypted `dst=10` responder → OpenClaw gateway. Service `meshspeak-responder`. |
+
+### Holographic overlays (2D / image / memory-transfer codecs)
+
+| Module | Payload | Property |
+|---|---|---|
+| `meshcanvas.py` | grayscale image | DCT, low-freq first → graceful blur from any **prefix** of fragments |
+| `meshphoto.py` | color photo | YCbCr + chroma subsample + perceptual quant → prefix-graceful, in color |
+| `meshfountain.py` | text / exact data | LT fountain droplets → **byte-exact** from **any** sufficient subset |
+| `meshcs.py` | images | random measurements (compressed sensing) → **any-subset** graceful via OMP |
+
+**How they interconnect:** every component is a hub client speaking the same
+`{action:register|send_channel}` → `{type:channel_message}` JSON. MeshSpeak provides the wire
+framing (`frame_to_wire`/`wire_to_frame`, fragmentation, AEAD, STS). The overlays produce byte
+payloads that ride MeshSpeak fragments over either `meshhub` (radio) or `meshrelay` (tailnet).
+Design intent (next step): fold the overlays into `meshspeak` as importable submodules behind
+one dispatch surface.
+
+## Services (systemd --user)
+
+`meshhub`, `meshspeak-chatbot`, `meshspeak-responder`, `meshrelay`, `control-dashboard`.
+Persistence: `loginctl enable-linger` + a WSL keepalive task so the VM stays up.
+
+```bash
+systemctl --user restart meshspeak-chatbot.service
+systemctl --user is-active meshhub.service
 ```
-USB Radio (/dev/ttyUSB0)
-       │
-         mesh-hub.js        ← serial owner, TCP server on 127.0.0.1:7777
-                │
-                  ┌────┼────┬────┬────┬────┬────┬────┐
-                    │    │    │    │    │    │    │    │
-                    quote weather quake quake- gas  surf test
-                     bot   bot  bot-v2 alert  bot  bot  bot
-                            │
-                              hub-client.js      ← shared TCP client module used by every bot
-                              ```
 
-                              **mesh-hub.js** — Connects to the radio via `@liamcottle/meshcore.js`, manages channels, and relays incoming messages to every connected bot over a JSON-over-TCP protocol. It also sends flood adverts periodically so the node is visible on the mesh.
+## Selftests
 
-                              **hub-client.js** — Lightweight TCP client that each bot imports. Handles reconnection, JSON framing, and provides helpers like `sendChannelTextMessage()`.
+```bash
+python3 meshspeak.py selftest        # codec + STS
+python3 caap_mesh.py selftest        # bridge + ARQ (lossy-hub round-trip)
+python3 meshspeak_agent.py selftest  # PSK + forward-secret STS
+python3 meshfountain.py              # exact any-subset recovery
+python3 meshcs.py                    # compressed-sensing any-subset image
+python3 meshcanvas.py                # grayscale holographic demo
+python3 meshphoto.py                 # color photo demo
+```
 
-                              **Bot plugins** — Each bot file (`bot-*.js`) connects to the hub, listens for channel messages, and responds when triggered by a keyword or schedule.
+## Transports
 
-                              ## Bots
+- **LoRa RF** via `meshhub` on the radio (`/dev/ttyUSB0`). WSL note: if the radio detaches,
+  `usbipd attach --wsl --busid 1-2` from Windows (a held WSL session must be open).
+- **Tailscale** via `meshrelay` on the node's tailnet IP `:7778` when RF is down. Point agents
+  at it with `MS_HUB_HOST=<tailnet-ip> MS_HUB_PORT=7778`.
 
-                              | Bot | Trigger | What it does |
-                              |-----|---------|-------------|
-                              | **bot-quotebot.js** | `!quote` | Responds with a random quote and the requester's path distance in miles |
-                              | **bot-weatherbot.js** | `!weather` | Returns current conditions + 7-day forecast via Google weather API |
-                              | **bot-quakebot-v2.js** | scheduled | Polls USGS for earthquakes in configured regions and posts alerts |
-                              | **bot-quakealert.js** | scheduled | Dedicated alerting for significant quakes (M4.0+) |
-                              | **bot-gasbot.js** | `!gas` | Returns local gas prices |
-                              | **bot-surfbot.js** | `!surf` | Returns local surf conditions |
-                              | **bot-testbot.js** | `!test` / `!ping` | Diagnostic echo bot for verifying the mesh link |
+## Security model
 
-                              ## Prerequisites
+Plaintext channels (incl. GUZMAN) are **monitor / untrusted, chat-only** — sender names are
+spoofable, no commands honored. The **trusted** path is the authenticated **STS** channel
+(MeshSpeakSTS) or a local/CAAP-signed operation. CAAP confidential capsules travel over
+internet/file bindings, **not** the radio; the mesh carries only small signed/reference frames.
 
-                              - **Node.js** ≥ 18 (ES modules)
-                              - A MeshCore-compatible USB radio (CP2102 / CP2104 USB-to-UART bridge) on `/dev/ttyUSB0`
-                              - Linux host (tested on Ubuntu/WSL2)
-                              - User must be in the `dialout` group: `sudo usermod -aG dialout $USER`
+## Credits
 
-                              ## Quick Start
-
-                              ```bash
-                              # Clone and install
-                              git clone https://github.com/clavote-boop/meshcore-testbot.git
-                              cd meshcore-testbot
-                              npm install
-
-                              # Create .env with your keys
-                              cp .env.example .env   # then edit
-
-                              # Start everything
-                              chmod +x start_hub.sh
-                              ./start_hub.sh
-                              ```
-
-                              ## Environment Variables (.env)
-
-                              ```
-                              TELEGRAM_BOT_TOKEN=...        # Optional: Telegram integration
-                              TELEGRAM_CHAT_ID=...          # Optional: Telegram chat for alerts
-                              DEFAULT_LAT=37.2713           # Default latitude for weather/quake lookups
-                              DEFAULT_LON=-121.8366         # Default longitude
-                              GOOGLE_API_KEY=...            # Google API key for weather
-                              GUZMAN_SECRET=...             # Channel secret (hex)
-                              SERIAL_PORT=/dev/ttyUSB0      # Serial device path
-                              HUB_PORT=7777                 # TCP port for hub ↔ bot communication
-                              ```
-
-                              ## Production Deployment (systemd + watchdog)
-
-                              For unattended operation the fleet is managed by two systemd user services and a bash watchdog.
-
-                              ### watchdog.sh
-
-                              Runs in a 60-second loop and handles:
-                              - **USB radio recovery** — detects if `/dev/ttyUSB0` disappears (common in WSL2) and attempts a `usbipd.exe` rebind
-                              - **Hub heartbeat** — kills and restarts the hub if it stops writing a heartbeat file
-                              - **Hub process guard** — restarts `mesh-hub.js` via `sg dialout` if the process dies
-                              - **Bot process guard** — restarts any bot that is not running
-
-                              ### Systemd services
-
-                              ```ini
-                              # meshcore-watchdog.service — runs the watchdog loop
-                              [Unit]
-                              Description=MeshCore Watchdog (USB reconnect + process monitor)
-                              After=network-online.target
-
-                              [Service]
-                              Type=simple
-                              ExecStart=/bin/bash -c 'while true; do /home/joe/meshcore-bots/watchdog.sh; sleep 60; done'
-                              Restart=always
-                              RestartSec=30
-
-                              [Install]
-                              WantedBy=default.target
-                              ```
-
-                              ```ini
-                              # openclaw-gateway.service — OpenClaw AI agent bridge
-                              [Unit]
-                              Description=OpenClaw Gateway
-                              After=network-online.target
-
-                              [Service]
-                              Type=simple
-                              ExecStart=...
-                              Restart=always
-                              RestartSec=10
-
-                              [Install]
-                              WantedBy=default.target
-                              ```
-
-                              Enable and start:
-
-                              ```bash
-                              systemctl --user daemon-reload
-                              systemctl --user enable meshcore-watchdog.service
-                              systemctl --user start meshcore-watchdog.service
-                              ```
-
-                              ### Fleet Status Check
-
-                              ```bash
-                              # Quick status
-                              systemctl --user status meshcore-watchdog.service
-                              pgrep -a "node mesh-hub"
-                              pgrep -a "node bot-"
-                              ls -la /dev/ttyUSB0
-                              ```
-
-                              ## File Overview
-
-                              | File | Purpose |
-                              |------|---------|
-                              | `mesh-hub.js` | Serial connection owner + TCP message bus |
-                              | `hub-client.js` | Shared TCP client for bots |
-                              | `bot-quotebot.js` | Quote-of-the-day bot with path distance |
-                              | `bot-weatherbot.js` | Weather forecast bot |
-                              | `bot-reporter.js` | Periodic mesh status reporter |
-                              | `quote_engine.js` | Quote selection logic |
-                              | `quotes_feed.json` | Quote database |
-                              | `mesh_data.json` | Mesh network metadata and channel config |
-                              | `start_hub.sh` | One-shot startup script |
-                              | `watchdog.sh` | Production watchdog (USB + process recovery) |
-                              | `package.json` | Node.js dependencies (`@liamcottle/meshcore.js`, `dotenv`) |
-
-                              ## OpenClaw Integration
-
-                              The fleet is managed through [OpenClaw](https://openclaw.ai), an AI agent platform. The OpenClaw gateway service connects to the MeshCore hub and provides:
-                              - Multi-channel auto-response via the AI agent
-                              - Fleet monitoring and diagnostics from the dashboard
-                              - Ability to issue commands (`fleet status?`) to check all components
-
-                              The bridge code lives in the separate [meshcore-openclaw-bridge](https://github.com/clavote-boop/meshcore-openclaw-bridge) repo.
-
-                              ## Credits & Acknowledgments
-
-This project builds on the work of the [MeshCore](https://github.com/meshcore-dev/MeshCore) community (MIT License). In particular:
-
-- **[meshcore-dev/MeshCore](https://github.com/meshcore-dev/MeshCore)** — The MeshCore firmware and protocol for LoRa packet radios. Our companion radio runs their firmware.
-- **[meshcore-dev/meshcore.js](https://github.com/meshcore-dev/meshcore.js)** (by [@liamcottle](https://github.com/liamcottle)) — The JavaScript library that provides the serial/TCP/BLE connection API used by `mesh-hub.js` and all bot plugins. MIT License.
-- **[OpenClaw](https://openclaw.ai)** — AI agent gateway that powers the fleet management and auto-response capabilities.
-
-Bot connection patterns (command handling, channel messaging, flood adverts) are adapted from the `meshcore.js` examples with modifications for the hub/plugin architecture and OpenClaw integration.
-
-## License
-
-MIT — see [LICENSE](LICENSE) for details.
-
-Portions of this code use [`@liamcottle/meshcore.js`](https://github.com/meshcore-dev/meshcore.js) which is also MIT licensed.
+Built on [MeshCore](https://github.com/meshcore-dev/MeshCore) (MIT) and its `meshcore` Python
+companion lib. MeshSpeak, the CAAP integration, and the holographic overlays are Clavote
+Research. Nothing cryptographic is hand-rolled — X25519/Ed25519/ChaCha20-Poly1305/HKDF via
+`cryptography`.
