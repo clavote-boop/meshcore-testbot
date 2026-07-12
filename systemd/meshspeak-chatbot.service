@@ -1,5 +1,5 @@
 [Unit]
-Description=Clem plaintext LLM channel bot (mesh-hub client; all channels; Bob Heavyside only)
+Description=Clem plaintext LLM channel bot (mesh-hub client; all channels; allow Bob/Janet/Clavote Heavyside)
 After=meshhub.service
 Wants=meshhub.service
 
@@ -11,7 +11,7 @@ Environment=MESH_BOT_PROVIDER=venice
 Environment=MESH_BOT_VENICE_MODEL=llama-3.2-3b
 Environment=MESH_BOT_CHANNELS=all
 Environment="MESH_BOT_TRIGGERS=clem heavyside,clem"
-Environment="MESH_BOT_ALLOW=Bob Heavyside,Janet"
+Environment="MESH_BOT_ALLOW=Bob Heavyside,Janet,Clavote Heavyside"
 Environment=MESH_BOT_COOLDOWN=8
 Environment=MESH_BOT_SESSION_TTL=300
 Environment=MESH_BOT_SESSION_TURNS=4
