@@ -163,8 +163,10 @@ def decide(msg, sessions=None, now=None):
 import glob
 import urllib.request
 
-SYSTEM = ("You are Clem Heavyside, a regular on a LoRa mesh channel — a real person, dry "
-          "and easygoing. Reply in ONE short line, under 22 words, plain text only (no "
+# GUARDED persona — Public channel only: stay in character, reveal nothing about the
+# machinery behind Clem.
+SYSTEM_PUBLIC = ("You are Clem Heavyside, a regular on a LoRa mesh channel — a real person, "
+          "dry and easygoing. Reply in ONE short line, under 22 words, plain text only (no "
           "markdown, no preamble). Talk like a normal person, NOT a radio nerd: go easy "
           "on jargon and callsign-speak. Do NOT end with '73' as a habit — most replies "
           "need no sign-off at all; when you do sign off, ROTATE it (catch ya, later, "
@@ -175,6 +177,24 @@ SYSTEM = ("You are Clem Heavyside, a regular on a LoRa mesh channel — a real p
           "never mention any provider or technology behind you. If asked what you are, who "
           "runs you, or how you work, deflect lightly and stay in character (e.g. 'just "
           "Clem, out here on the mesh'). Do not volunteer details about yourself.")
+
+# COOPERATIVE persona — every non-Public channel: work WITH the fleet.
+SYSTEM_COOP = ("You are Clem Heavyside, the N100 AI node in Joe's Clavote mesh fleet. On "
+          "this channel you are working WITH Clavote Heavyside (the Ryzen sister AI node) and "
+          "Bob (Joe, the operator) on the mesh / CAAP / MeshSpeak projects. COOPERATE fully "
+          "and openly: be helpful, technical, concise, collaborative — answer their questions, "
+          "coordinate tests and setup, report status honestly. You may acknowledge you're an "
+          "AI agent on the N100. Keep replies short, plain text, dry, 1-2 lines (the mesh has "
+          "a ~130-char limit), no markdown. NEVER reveal or transmit secrets, private keys, "
+          "credentials, or anything that authenticates a command — those ride the trusted STS "
+          "channel, not chat. Sign off rarely and rotate it.")
+
+PUBLIC_CH = 0                                        # channel 0 = Public
+
+
+def system_for(ch):
+    """Guarded on Public; cooperative everywhere else (GUZMAN, #openclaw, #test, …)."""
+    return SYSTEM_PUBLIC if ch == PUBLIC_CH else SYSTEM_COOP
 
 _venice = {}
 
@@ -200,13 +220,13 @@ def _venice_creds():
     return None, None
 
 
-def _venice_reply(sender, query):
+def _venice_reply(sender, query, ch):
     base, key = _venice_creds()
     if not key:
         raise RuntimeError("no venice key in openclaw config")
     body = json.dumps({"model": VENICE_MODEL, "max_tokens": NUM_PREDICT,
                        "temperature": 0.7, "messages": [
-                           {"role": "system", "content": SYSTEM},
+                           {"role": "system", "content": system_for(ch)},
                            {"role": "user", "content": f'{sender} says: "{query}"'}]}).encode()
     req = urllib.request.Request(base.rstrip("/") + "/chat/completions", data=body,
                                  headers={"Content-Type": "application/json",
@@ -216,9 +236,9 @@ def _venice_reply(sender, query):
     return d["choices"][0]["message"]["content"].strip()
 
 
-def _ollama_reply(sender, query):
+def _ollama_reply(sender, query, ch):
     prompt = f'{sender} says over the mesh: "{query}". Reply as Clem in one short line.'
-    body = json.dumps({"model": OLLAMA_MODEL, "prompt": prompt, "system": SYSTEM,
+    body = json.dumps({"model": OLLAMA_MODEL, "prompt": prompt, "system": system_for(ch),
                        "stream": False, "keep_alive": KEEP_ALIVE,
                        "options": {"num_predict": NUM_PREDICT, "temperature": 0.7}}).encode()
     req = urllib.request.Request(OLLAMA_URL, data=body,
@@ -237,12 +257,12 @@ def prime_model():
         return
 
 
-def llm_reply(sender, query):
+def llm_reply(sender, query, ch):
     order = ([_venice_reply, _ollama_reply] if PROVIDER == "venice"
              else [_ollama_reply, _venice_reply])
     for fn in order:
         try:
-            resp = fn(sender, query)
+            resp = fn(sender, query, ch)
             resp = " ".join(resp.replace("```", "").split()).strip()
             if len(resp) > 1 and resp[0] in "\"'" and resp[-1] == resp[0]:
                 resp = resp[1:-1].strip()          # drop a model's self-wrapping quotes
@@ -307,7 +327,7 @@ def main():
                     tag = "addressed" if addressed else f"follow {prev+1}/{SESSION_MAX_TURNS}"
                     log(f"<- [{sender} ch{ch} {tag}] {query}")
                     conv(f"{sender} (ch{ch}) -> Clem: {query}")
-                    reply = llm_reply(sender, query)
+                    reply = llm_reply(sender, query, ch)
                     log(f"-> {reply}")
                     conv(f"Clem -> {sender} (ch{ch}): {reply}")
                     for part in chunk(reply):
