@@ -126,6 +126,12 @@ async def on_channel(event):
             elif kind == "msg":
                 v = val
                 shown = v.decode("utf-8", "replace") if isinstance(v, (bytes, bytearray)) else str(v)
+            elif kind == "control":
+                log(f"CH{idx} MeshSpeak control frame <{sender}>")
+                await broadcast({"type": "channel_message", "channelIdx": idx,
+                                 "senderName": str(sender), "text": "[MeshSpeak control]",
+                                 "ms": True, "raw": ms.frame_to_wire(frame)})
+                return
             else:
                 log(f"CH{idx} MeshSpeak drop: {val}")
                 return
