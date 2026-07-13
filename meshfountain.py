@@ -122,7 +122,7 @@ def cmd_selftest():
         if not cond:
             fails[0] += 1
 
-    msg = ("Clavote Heavyside, memory-transfer test: this exact line rides a holographic "
+    msg = ("Blob Heavyside, memory-transfer test: this exact line rides a holographic "
            "fountain over LoRa. Any ~K droplets rebuild it byte-for-byte — no fragment is "
            "special, order-free, drops-tolerant. 73 -Clem").encode()
     B = 48

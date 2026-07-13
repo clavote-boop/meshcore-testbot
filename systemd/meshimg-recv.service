@@ -1,0 +1,20 @@
+[Unit]
+Description=MeshImage Receiver — always-on fountain-coded image listener
+After=meshhub.service
+Wants=meshhub.service
+
+[Service]
+Type=simple
+ExecStart=/home/joe/meshcore-bots/meshimage_receiver.sh
+Restart=on-failure
+RestartSec=3
+Environment=MS_HUB_HOST=127.0.0.1
+Environment=MS_HUB_PORT=7777
+Environment=MESHIMG_CH=7
+Environment=MESHIMG_LABEL=n100
+Environment=MESHIMG_PY=/home/linuxbrew/.linuxbrew/bin/python3
+Environment=MESHIMG_DIR=/home/joe/meshcore-bots
+Environment=MESHIMG_ARCHIVE=/home/joe/received_images
+
+[Install]
+WantedBy=default.target
